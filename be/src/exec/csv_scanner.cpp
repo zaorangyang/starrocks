@@ -168,6 +168,7 @@ StatusOr<ChunkPtr> CSVScanner::get_next() {
 
     ChunkPtr chunk;
     const int chunk_capacity = _state->chunk_size();
+    // 第一步需要一个矩阵容器用于存储这次get_next获取的数据，json和csv都有这一步
     auto src_chunk = _create_chunk(_src_slot_descriptors);
     src_chunk->reserve(chunk_capacity);
 
@@ -233,7 +234,9 @@ StatusOr<ChunkPtr> CSVScanner::get_next() {
                 return status;
             }
         }
-
+        /*
+         * 我们现在的问题是src_chunk已经append数据了，那fill_columns_from_path这个函数是干啥用的。
+         */
         fill_columns_from_path(src_chunk, _num_fields_in_csv, _scan_range.ranges[_curr_file_index].columns_from_path,
                                src_chunk->num_rows());
         ASSIGN_OR_RETURN(chunk, materialize(nullptr, src_chunk));
@@ -328,6 +331,10 @@ Status CSVScanner::_parse_csv_v2(Chunk* chunk) {
     return chunk->num_rows() > 0 ? Status::OK() : Status::EndOfFile("");
 }
 
+/*
+ * 解析的目的是为了服务导入，现在的问题是我们不清楚如何把数据导入到SR表里。所以接下来的问题是
+ * 要仔细分析下CSV/Json的数据导入过程。 
+ */
 Status CSVScanner::_parse_csv(Chunk* chunk) {
     const int capacity = _state->chunk_size();
     DCHECK_EQ(0, chunk->num_rows());
@@ -339,7 +346,8 @@ Status CSVScanner::_parse_csv(Chunk* chunk) {
     for (int i = 0; i < num_columns; i++) {
         _column_raw_ptrs[i] = chunk->get_column_by_index(i).get();
     }
-
+    // 从CSV的解析来看，如果开启了严格模式，那么解析时，如果遇到invalid fields，那么不要插入NULl
+    // 关闭了严格模式，遇到invalid fields，那么插入NULl
     csv::Converter::Options options{.invalid_field_as_null = !_strict_mode};
 
     for (size_t num_rows = chunk->num_rows(); num_rows < capacity; /**/) {
@@ -381,6 +389,15 @@ Status CSVScanner::_parse_csv(Chunk* chunk) {
             }
             const Slice& field = fields[j];
             options.type_desc = &(slot->type());
+            /*
+             * 这里认为CSV的每一行字段的顺序和chunk中定义的SR table的字段顺序是一致的，所以
+             * 按照顺序读就可以了。整个scanner逻辑并没有调整chunk的顺序，所以是不是file_scanner这个类对
+             * _src_slot_descriptors进行了操作。
+             */
+            /*
+             * 对于CSV来说，遇到数据溢出_converters的read_string返回false，把_counter->num_rows_filtered做自增操作
+             * 相当于跳过这一行
+             */
             if (!_converters[k]->read_string(_column_raw_ptrs[k], field, options)) {
                 chunk->set_num_rows(num_rows);
                 if (_counter->num_rows_filtered++ < 50) {

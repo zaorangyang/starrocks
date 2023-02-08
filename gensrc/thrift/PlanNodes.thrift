@@ -141,6 +141,7 @@ enum TFileFormatType {
     FORMAT_JSON = 9,
     FORMAT_CSV_ZSTD = 10,
     FORMAT_AVRO = 11,
+    FORMAT_PROTOBUF = 12,
 }
 
 // One broker range information.

@@ -390,6 +390,9 @@ public class StreamLoadInfo {
         if (routineLoadJob.getFormat().equals("avro")) {
             fileFormatType = TFileFormatType.FORMAT_AVRO;
         }
+        if (routineLoadJob.getFormat().equals("protobuf")) {
+            fileFormatType = TFileFormatType.FORMAT_PROTOBUF;
+        }
         StreamLoadInfo streamLoadInfo = new StreamLoadInfo(dummyId, -1L /* dummy txn id */,
                 TFileType.FILE_STREAM, fileFormatType);
         streamLoadInfo.setOptionalFromRoutineLoadJob(routineLoadJob);
