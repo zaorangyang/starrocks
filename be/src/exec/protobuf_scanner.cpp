@@ -36,6 +36,8 @@
 #include "runtime/runtime_state.h"
 #include "runtime/types.h"
 #include "util/runtime_profile.h"
+#include "runtime/stream_load/load_stream_mgr.h"
+#include "runtime/stream_load/stream_load_pipe.h"
 #include <google/protobuf/descriptor.h>
 #include <google/protobuf/dynamic_message.h>
 #include <google/protobuf/io/zero_copy_stream_impl.h>
@@ -45,27 +47,32 @@
 
 namespace starrocks {
 
-using namespace google::protobuf;
-using namespace google::protobuf::io;
-using namespace google::protobuf::compiler;
+using PBArrayInputStream = google::protobuf::io::ArrayInputStream;
+using PBTokenizer = google::protobuf::io::Tokenizer;
+using PBFileDescriptorProto = google::protobuf::FileDescriptorProto;
+using PBParser = google::protobuf::compiler::Parser;
+using PBDescriptorPool = google::protobuf::DescriptorPool;
+using PBFileDescriptor = google::protobuf::FileDescriptor;
+using PBDescriptor = google::protobuf::Descriptor;
+using PBDynamicMessageFactory = google::protobuf::DynamicMessageFactory;
+using PBMessage = google::protobuf::Message;
+using PBReflection = google::protobuf::Reflection;
+using PBFieldDescriptor = google::protobuf::FieldDescriptor;
+using PBEnumValueDescriptor = google::protobuf::EnumValueDescriptor;
 
 ProtobufScanner::ProtobufScanner(RuntimeState* state, RuntimeProfile* profile, const TBrokerScanRange& scan_range,
                          ScannerCounter* counter, serdes_t *serdes, const std::string message_type)
         : FileScanner(state, profile, scan_range.params, counter),
           _scan_range(scan_range),
-          _serdes(serdes)
-          _message_type(message_type) {
-    std::call_once(_once_flag, init_pb_conver_map);
-}
+          _serdes(serdes),
+          _message_type(message_type) {}
 
 ProtobufScanner::ProtobufScanner(RuntimeState* state, RuntimeProfile* profile, const TBrokerScanRange& scan_range,
                 ScannerCounter* counter, const std::string schema_text, const std::string message_type)
         : FileScanner(state, profile, scan_range.params, counter),
             _scan_range(scan_range),
             _schema_text(schema_text),
-            _message_type(message_type) {
-    std::call_once(_once_flag, init_pb_conver_map);
-}
+            _message_type(message_type) {}
 
 ProtobufScanner::~ProtobufScanner() = default;
 
@@ -138,25 +145,17 @@ Status ProtobufScanner::_create_src_chunk(ChunkPtr* chunk) {
             continue;
         }
         auto column = ColumnHelper::create_column(slot_desc->type(), true);
-        (*chunk)->append_column(col, slot_desc->id());
+        (*chunk)->append_column(column, slot_desc->id());
     }
 
     return Status::OK();
 }
 
-/*
- * 需要几个输入：
- * 1. consumer消费到的二进制流，参考Status JsonReader::_read_and_parse_json() {函数
- * 这个问题的核心是需要从consumer那里获取到唯一一个proto message的二进制流。
- * 2. serdes
- * 3. message_type
- * 这里面有一个问题，拿json举例，JsonScanner一次get_next会get多行数据，一次获取多行数据的意义
- * 是可以增强性能。所以现在的问题是，这个问题是现在考虑还是先简单写一个parse_probobuf, 我觉得先
- * 简单考虑，然后再增加这个逻辑，我们现在的首要问题是把流程走通。
- * 
- *  
- */
-Status _parse_protobuf(Chunk* chunk) {
+void ProtobufScanner::_report_error(const std::string& line, const std::string& err_msg) {
+    _state->append_error_msg_to_file(line, err_msg);
+}
+
+Status ProtobufScanner::_parse_protobuf(Chunk* chunk, std::shared_ptr<SequentialFile> file) {
     const int capacity = _state->chunk_size();
     DCHECK_EQ(0, chunk->num_rows());
     int num_columns = chunk->num_columns();
@@ -166,35 +165,35 @@ Status _parse_protobuf(Chunk* chunk) {
     }
     for (size_t num_rows = chunk->num_rows(); num_rows < capacity; /**/) {
         // Step1: fetch one protobuf message 
-        uint8_t* data{};
+        const uint8_t* data{};
         size_t length = 0;
-        auto* stream_file = down_cast<StreamLoadPipeInputStream*>(_file->stream().get());
+        auto* stream_file = down_cast<StreamLoadPipeInputStream*>(file->stream().get());
         {
             SCOPED_RAW_TIMER(&_counter->file_read_ns);
             ASSIGN_OR_RETURN(_parser_buf, stream_file->pipe()->read());
         }
         data = reinterpret_cast<uint8_t*>(_parser_buf->ptr);
         length = _parser_buf->remaining();
-
+        Slice record(data, length);
         const char* schema_text = nullptr;
         if (_schema_text.size() == 0) {
             // Step2: fetch message schema ID
-            uint32_t schema_id = get_schema_id(_serdes, &data, &length, _err_msg, sizeof(_err_msg));
+            uint32_t schema_id = get_schema_id(_serdes, &data, &length, _err_buf, sizeof(_err_buf));
             if (schema_id == -1) {
                 if (_counter->num_rows_filtered++ < 50) {
                     std::stringstream error_msg;
-                    error_msg << strings::Substitute("Get schema id error $0.", std::string(errstr));
+                    error_msg << strings::Substitute("Get schema id error $0.", std::string(_err_buf));
                     _report_error(record.to_string(), error_msg.str());
                 }
                 continue;
             }
 
             // Step3: fetch message schema
-            serdes_schema_t *schema = serdes_schema_get(_serdes, NULL, schema_id, _err_msg, sizeof(_err_msg));
+            serdes_schema_t *schema = serdes_schema_get(_serdes, NULL, schema_id, _err_buf, sizeof(_err_buf));
             if (!schema) {
                 if (_counter->num_rows_filtered++ < 50) {
                     std::stringstream error_msg;
-                    error_msg << strings::Substitute("Failed to get schema: $0, schema_id is $1.", std::string(errstr), std::to_string(schema_id));
+                    error_msg << strings::Substitute("Failed to get schema: $0, schema_id is $1.", std::string(_err_buf), std::to_string(schema_id));
                     _report_error(record.to_string(), error_msg.str());
                 }
                 continue;
@@ -203,7 +202,7 @@ Status _parse_protobuf(Chunk* chunk) {
             if (!schema_text) {
                 if (_counter->num_rows_filtered++ < 50) {
                     std::stringstream error_msg;
-                    error_msg << strings::Substitute("Failed to get schema object. schema_id is $0.", std::string(errstr));
+                    error_msg << strings::Substitute("Failed to get schema object. schema_id is $0.", std::string(_err_buf));
                     _report_error(record.to_string(), error_msg.str());
                 }
                 continue;
@@ -213,199 +212,663 @@ Status _parse_protobuf(Chunk* chunk) {
         }
 
         // Step4: parse pb
-        google::protobuf::io::ArrayInputStream raw_input(schema_text, strlen(schema_text));
-        google::protobuf::io::Tokenizer input(&raw_input, NULL);
-        google::protobuf::FileDescriptorProto file_desc_proto;
-        google::protobuf::compiler::Parser parser;
+        PBArrayInputStream raw_input(schema_text, strlen(schema_text));
+        PBTokenizer input(&raw_input, NULL);
+        PBFileDescriptorProto file_desc_proto;
+        PBParser parser;
         if (!parser.Parse(&input, &file_desc_proto)) {
-            std::cerr << "Failed to parse .proto definition:" << text;
-            return -1;
+            std::stringstream error_msg;
+            error_msg << "Failed to parse .proto definition:" << schema_text;
+            _report_error(record.to_string(), error_msg.str());
+            continue;
         }
 
         if (!file_desc_proto.has_name()) {
             file_desc_proto.set_name(_message_type);
         }
         
-        google::protobuf::DescriptorPool pool;
-        const google::protobuf::FileDescriptor* file_desc =
+        PBDescriptorPool pool;
+        const PBFileDescriptor* file_desc =
         pool.BuildFile(file_desc_proto);
         if (file_desc == NULL) {
-            return Status::InternalError(strings::Substitute("Cannot get file descriptor from file descriptor proto: $0", file_desc_proto.DebugString());
+            std::stringstream error_msg;
+            error_msg << "Cannot get file descriptor from file descriptor proto: " << file_desc_proto.DebugString();
+            _report_error(record.to_string(), error_msg.str());
+            continue;
         }
 
-        const google::protobuf::Descriptor* message_desc = file_desc->FindMessageTypeByName(message_type);
+        const PBDescriptor* message_desc = file_desc->FindMessageTypeByName(_message_type);
         if (message_desc == NULL) {
-            return Status::InternalError(strings::Substitute("Cannot get message descriptor of message: $0", file_desc.DebugString());
+            std::stringstream error_msg;
+            error_msg << "Cannot get message descriptor of message: " << file_desc->DebugString();
+            _report_error(record.to_string(), error_msg.str());
+            continue;
         }
 
-        google::protobuf::DynamicMessageFactory factory;
-        const google::protobuf::Message* prototype_msg =
+        PBDynamicMessageFactory factory;
+        const PBMessage* prototype_msg =
             factory.GetPrototype(message_desc);
         if (prototype_msg == NULL) {
-            return Status::InternalError("Cannot create prototype message from message descriptor");
+            std::stringstream error_msg;
+            error_msg << "Cannot create prototype message from message descriptor";
+            _report_error(record.to_string(), error_msg.str());
+            continue;
         }
 
-        google::protobuf::Message* mutable_msg = prototype_msg->New();
+        PBMessage* mutable_msg = prototype_msg->New();
         if (mutable_msg == NULL) {
-            return Status::InternalError("Failed in prototype_msg->New(); to create mutable message");
+            std::stringstream error_msg;
+            error_msg << "Failed in prototype_msg->New(); to create mutable message";
+            _report_error(record.to_string(), error_msg.str());
+            continue;
         }
 
         if (!mutable_msg->ParseFromArray(data, length)) {
-            return Status::InternalError("Failed to parse value in buffer");
+            std::stringstream error_msg;
+            error_msg << "Failed to parse value in buffer";
+            _report_error(record.to_string(), error_msg.str());
+            continue;
         }
 
-        const Reflection* reflection = mutable_msg->GetReflection();
+        const PBReflection* reflection = mutable_msg->GetReflection();
         bool has_error = false;
+        bool unsupport_convertion = false;
         for (int i = 0; i < _src_slot_descriptors.size(); i++) {
             auto slot = _src_slot_descriptors[i];
             if (slot == nullptr) {
                 continue;
             }
-            const FieldDescriptor* field = message_desc->FindFieldByName(slot->col_name());
-
-            // We dont find convert function, continue to next row.
-            if (pb_conver_map.count(field->cpp_type()) == 0 ||
-                    pb_conver_map[field->cpp_type()].count(slot.type().type) == 0) {
-                if (!_strict_mode) {
-                    _column_raw_ptrs[i]->append_nulls(1);
-                    continue;
-                } else {
-                    chunk->set_num_rows(num_rows);
-                    _counter->num_rows_filtered++;
-                    if (_counter->num_rows_filtered++ < 50) {
-                        std::stringstream error_msg;
-                        error_msg << "Dont support " << field->TypeName() << " to " << slot->type().debug_string() << " convert for protobuf data type. "
-                                << "The column is '" << slot->col_name() << ".";
-                        _report_error(record.to_string(), error_msg.str());
-                    }
-                    has_error = true;
-                    break;
-                }
-            }
+            const PBFieldDescriptor* field = message_desc->FindFieldByName(slot->col_name());
             std::stringstream error_msg;
-            PbConverter converter = pb_conver_map[field->cpp_type()][slot.type().type];
             switch (field->cpp_type()) {
-                case FieldDescriptor::CppType::CPPTYPE_INT32:
+            case PBFieldDescriptor::CppType::CPPTYPE_INT32:
+                {
+                    int32_t value = reflection->GetInt32(*mutable_msg, field);
+                    switch (slot->type().type)
                     {
-                        int32_t value = reflection->GetInt32(*mutable_msg, field);
-                        has_error = converter.convert_func(_column_raw_ptrs[i], value, _strict_mode);
-                        if (has_error) {
-                            error_msg << "Value '" << std::to_string(value) << "' is out of range. "
-                                      << "The type of '" << slot->col_name() << "' is " << slot->type().debug_string();
-                        }
+                    case LogicalType::TYPE_TINYINT:
+                        has_error = integer_to_integer_pb_convert<int32_t, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_TINYINT:
+                        has_error = integer_to_integer_pb_convert<int32_t, uint8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_SMALLINT:
+                        has_error = integer_to_integer_pb_convert<int32_t, int16_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_SMALLINT:
+                        has_error = integer_to_integer_pb_convert<int32_t, uint16_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_INT:
+                        has_error = append_pb_convert<int32_t, int32_t>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_INT:
+                        has_error = integer_to_integer_pb_convert<int32_t, uint32_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_BIGINT:
+                        has_error = append_pb_convert<int32_t, int64_t>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_BIGINT:
+                        has_error = append_pb_convert<int32_t, uint64_t>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_LARGEINT:
+                        has_error = append_pb_convert<int32_t, int128_t>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_FLOAT:
+                        has_error = append_pb_convert<int32_t, float>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_DOUBLE:
+                        has_error = append_pb_convert<int32_t, double>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_CHAR:
+                        has_error = integer_to_integer_pb_convert<int32_t, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_BOOLEAN:
+                        has_error = integer_to_integer_pb_convert<int32_t, uint8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_DECIMAL32:
+                        // TODO: decimal_scale 
+                        has_error = decimalv3_pb_convert<int32_t, int32_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        break;
+                    case LogicalType::TYPE_DECIMAL64:
+                        // TODO: decimal_scale 
+                        has_error = decimalv3_pb_convert<int32_t, int64_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        break;
+                    case LogicalType::TYPE_DECIMAL128:
+                        // TODO: decimal_scale 
+                        has_error = decimalv3_pb_convert<int32_t, int128_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        break;
+                    case LogicalType::TYPE_DECIMALV2:
+                        has_error = decimalv2_pb_convert<int32_t, DecimalV2Value>(_column_raw_ptrs[i], value);
+                        break;                         
+                    default:
+                        has_error = true;
+                        unsupport_convertion = true;
+                        break;
                     }
-                    break;
-                case FieldDescriptor::CppType::CPPTYPE_INT64:
+                    if (unsupport_convertion) {
+                        error_msg << "Dont support " << field->type_name() << " to " << slot->type().debug_string() << " convert for protobuf data type. "
+                                    << "The column is '" << slot->col_name() << ".";
+                    } else if (has_error) {
+                        error_msg << "Value '" << std::to_string(value) << "' is out of range. "
+                                    << "The type of '" << slot->col_name() << "' is " << slot->type().debug_string();
+                    }
+                }
+                break;
+            case PBFieldDescriptor::CppType::CPPTYPE_INT64:
+                {
+                    int64_t value = reflection->GetInt64(*mutable_msg, field);
+                    switch (slot->type().type)
                     {
-                        int64_t value = reflection->GetInt64(*mutable_msg, field);
-                        has_error = converter.convert_func(_column_raw_ptrs[i], value, _strict_mode);
-                        if (has_error) {
-                            error_msg << "Value '" << std::to_string(value) << "' is out of range. "
-                                      << "The type of '" << slot->col_name() << "' is " << slot->type().debug_string();
-                        }
+                    case LogicalType::TYPE_TINYINT:
+                        has_error = integer_to_integer_pb_convert<int64_t, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_TINYINT:
+                        has_error = integer_to_integer_pb_convert<int64_t, uint8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_SMALLINT:
+                        has_error = integer_to_integer_pb_convert<int64_t, int16_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_SMALLINT:
+                        has_error = integer_to_integer_pb_convert<int64_t, uint16_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_INT:
+                        has_error = integer_to_integer_pb_convert<int64_t, int32_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_INT:
+                        has_error = integer_to_integer_pb_convert<int64_t, uint32_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_BIGINT:
+                        has_error = append_pb_convert<int64_t, int64_t>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_BIGINT:
+                        has_error = append_pb_convert<int64_t, uint64_t>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_LARGEINT:
+                        has_error = append_pb_convert<int64_t, int128_t>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_FLOAT:
+                        has_error = append_pb_convert<int64_t, float>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_DOUBLE:
+                        has_error = append_pb_convert<int64_t, double>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_CHAR:
+                        has_error = integer_to_integer_pb_convert<int64_t, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_BOOLEAN:
+                        has_error = integer_to_integer_pb_convert<int64_t, uint8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_DECIMAL32:
+                        // TODO: decimal_scale 
+                        has_error = decimalv3_pb_convert<int64_t, int32_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        break;
+                    case LogicalType::TYPE_DECIMAL64:
+                        // TODO: decimal_scale 
+                        has_error = decimalv3_pb_convert<int64_t, int64_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        break;
+                    case LogicalType::TYPE_DECIMAL128:
+                        // TODO: decimal_scale 
+                        has_error = decimalv3_pb_convert<int64_t, int128_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        break;
+                    case LogicalType::TYPE_DECIMALV2:
+                        has_error = decimalv2_pb_convert<int64_t, DecimalV2Value>(_column_raw_ptrs[i], value);
+                        break;                         
+                    default:
+                        has_error = true;
+                        unsupport_convertion = true;
+                        break;
                     }
-                    break;
-                case FieldDescriptor::CppType::CPPTYPE_UINT32:
+                    if (unsupport_convertion) {
+                        error_msg << "Dont support " << field->type_name() << " to " << slot->type().debug_string() << " convert for protobuf data type. "
+                                    << "The column is '" << slot->col_name() << ".";
+                    } else if (has_error) {
+                        error_msg << "Value '" << std::to_string(value) << "' is out of range. "
+                                    << "The type of '" << slot->col_name() << "' is " << slot->type().debug_string();
+                    }
+                }
+                break;
+            case PBFieldDescriptor::CppType::CPPTYPE_UINT32:
+                {
+                    uint32_t value = reflection->GetUInt32(*mutable_msg, field);
+                    switch (slot->type().type)
                     {
-                        uint32_t value = reflection->GetUInt32(*mutable_msg, field);
-                        has_error = converter.convert_func(_column_raw_ptrs[i], value, _strict_mode);
-                        if (has_error) {
-                            error_msg << "Value '" << std::to_string(value) << "' is out of range. "
-                                      << "The type of '" << slot->col_name() << "' is " << slot->type().debug_string();
-                        }                    
+                    case LogicalType::TYPE_TINYINT:
+                        has_error = integer_to_integer_pb_convert<uint32_t, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_TINYINT:
+                        has_error = integer_to_integer_pb_convert<uint32_t, uint8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_SMALLINT:
+                        has_error = integer_to_integer_pb_convert<uint32_t, int16_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_SMALLINT:
+                        has_error = integer_to_integer_pb_convert<uint32_t, uint16_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_INT:
+                        has_error = integer_to_integer_pb_convert<uint32_t, int32_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_INT:
+                        has_error = append_pb_convert<uint32_t, uint32_t>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_BIGINT:
+                        has_error = append_pb_convert<uint32_t, int64_t>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_BIGINT:
+                        has_error = append_pb_convert<uint32_t, uint64_t>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_LARGEINT:
+                        has_error = append_pb_convert<uint32_t, int128_t>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_FLOAT:
+                        has_error = append_pb_convert<uint32_t, float>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_DOUBLE:
+                        has_error = append_pb_convert<uint32_t, double>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_CHAR:
+                        has_error = integer_to_integer_pb_convert<uint32_t, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_BOOLEAN:
+                        has_error = integer_to_integer_pb_convert<uint32_t, uint8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_DECIMAL32:
+                        // TODO: decimal_scale 
+                        has_error = decimalv3_pb_convert<uint32_t, int32_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        break;
+                    case LogicalType::TYPE_DECIMAL64:
+                        // TODO: decimal_scale 
+                        has_error = decimalv3_pb_convert<uint32_t, int64_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        break;
+                    case LogicalType::TYPE_DECIMAL128:
+                        // TODO: decimal_scale 
+                        has_error = decimalv3_pb_convert<uint32_t, int128_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        break;
+                    case LogicalType::TYPE_DECIMALV2:
+                        has_error = decimalv2_pb_convert<uint32_t, DecimalV2Value>(_column_raw_ptrs[i], value);
+                        break;                         
+                    default:
+                        has_error = true;
+                        unsupport_convertion = true;
+                        break;
                     }
-                    break;
-                case FieldDescriptor::CppType::CPPTYPE_UINT64:
+                    if (unsupport_convertion) {
+                        error_msg << "Dont support " << field->type_name() << " to " << slot->type().debug_string() << " convert for protobuf data type. "
+                                    << "The column is '" << slot->col_name() << ".";
+                    } else if (has_error) {
+                        error_msg << "Value '" << std::to_string(value) << "' is out of range. "
+                                    << "The type of '" << slot->col_name() << "' is " << slot->type().debug_string();
+                    }
+                }
+                break;
+            case PBFieldDescriptor::CppType::CPPTYPE_UINT64:
+                {
+                    uint64_t value = reflection->GetUInt64(*mutable_msg, field);
+                    switch (slot->type().type)
                     {
-                        uint64_t value = reflection->GetUInt64(*mutable_msg, field);
-                        has_error = converter.convert_func(_column_raw_ptrs[i], value, _strict_mode);
-                        if (has_error) {
-                            error_msg << "Value '" << std::to_string(value) << "' is out of range. "
-                                      << "The type of '" << slot->col_name() << "' is " << slot->type().debug_string();
-                        }                    
+                    case LogicalType::TYPE_TINYINT:
+                        has_error = integer_to_integer_pb_convert<uint64_t, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_TINYINT:
+                        has_error = integer_to_integer_pb_convert<uint64_t, uint8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_SMALLINT:
+                        has_error = integer_to_integer_pb_convert<uint64_t, int16_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_SMALLINT:
+                        has_error = integer_to_integer_pb_convert<uint64_t, uint16_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_INT:
+                        has_error = integer_to_integer_pb_convert<uint64_t, int32_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_INT:
+                        has_error = integer_to_integer_pb_convert<uint64_t, uint32_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_BIGINT:
+                        has_error = integer_to_integer_pb_convert<uint64_t, int64_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_BIGINT:
+                        has_error = append_pb_convert<uint64_t, uint64_t>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_LARGEINT:
+                        has_error = append_pb_convert<uint64_t, int128_t>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_FLOAT:
+                        has_error = append_pb_convert<uint64_t, float>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_DOUBLE:
+                        has_error = append_pb_convert<uint64_t, double>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_CHAR:
+                        has_error = integer_to_integer_pb_convert<uint64_t, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_BOOLEAN:
+                        has_error = integer_to_integer_pb_convert<uint64_t, uint8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_DECIMAL32:
+                        // TODO: decimal_scale 
+                        has_error = decimalv3_pb_convert<uint64_t, int32_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        break;
+                    case LogicalType::TYPE_DECIMAL64:
+                        // TODO: decimal_scale 
+                        has_error = decimalv3_pb_convert<uint64_t, int64_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        break;
+                    case LogicalType::TYPE_DECIMAL128:
+                        // TODO: decimal_scale 
+                        has_error = decimalv3_pb_convert<uint64_t, int128_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        break;
+                    case LogicalType::TYPE_DECIMALV2:
+                        has_error = decimalv2_pb_convert<uint64_t, DecimalV2Value>(_column_raw_ptrs[i], value);
+                        break;                         
+                    default:
+                        has_error = true;
+                        unsupport_convertion = true;
+                        break;
                     }
-                    break;
-                case FieldDescriptor::CppType::CPPTYPE_DOUBLE:
+                    if (unsupport_convertion) {
+                        error_msg << "Dont support " << field->type_name() << " to " << slot->type().debug_string() << " convert for protobuf data type. "
+                                    << "The column is '" << slot->col_name() << ".";
+                    } else if (has_error) {
+                        error_msg << "Value '" << std::to_string(value) << "' is out of range. "
+                                    << "The type of '" << slot->col_name() << "' is " << slot->type().debug_string();
+                    }                
+                }
+                break;
+            case PBFieldDescriptor::CppType::CPPTYPE_DOUBLE:
+                {
+                    double value = reflection->GetDouble(*mutable_msg, field);
+                    switch (slot->type().type)
                     {
-                        double value = reflection->GetDouble(*mutable_msg, field);
-                        has_error = converter.convert_func(_column_raw_ptrs[i], value, _strict_mode);
-                        if (has_error) {
-                            error_msg << "Value '" << std::to_string(value) << "' is out of range. "
-                                      << "The type of '" << slot->col_name() << "' is " << slot->type().debug_string();
-                        }                    
+                    case LogicalType::TYPE_TINYINT:
+                        has_error = float_to_integer_pb_convert<double, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_TINYINT:
+                        has_error = float_to_integer_pb_convert<double, uint8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_SMALLINT:
+                        has_error = float_to_integer_pb_convert<double, int16_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_SMALLINT:
+                        has_error = float_to_integer_pb_convert<double, uint16_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_INT:
+                        has_error = float_to_integer_pb_convert<double, int32_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_INT:
+                        has_error = float_to_integer_pb_convert<double, uint32_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_BIGINT:
+                        has_error = float_to_integer_pb_convert<double, int64_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_BIGINT:
+                        has_error = float_to_integer_pb_convert<double, uint64_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_LARGEINT:
+                        has_error = float_to_integer_pb_convert<double, int128_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_FLOAT:
+                        has_error = append_pb_convert<double, float>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_DOUBLE:
+                        has_error = append_pb_convert<double, double>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_CHAR:
+                        has_error = float_to_integer_pb_convert<double, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_BOOLEAN:
+                        has_error = float_to_integer_pb_convert<double, uint8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_DECIMAL32:
+                        // TODO: decimal_scale 
+                        has_error = decimalv3_float_double_pb_convert<double, int32_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        break;
+                    case LogicalType::TYPE_DECIMAL64:
+                        // TODO: decimal_scale 
+                        has_error = decimalv3_float_double_pb_convert<double, int64_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        break;
+                    case LogicalType::TYPE_DECIMAL128:
+                        // TODO: decimal_scale 
+                        has_error = decimalv3_float_double_pb_convert<double, int128_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        break;
+                    case LogicalType::TYPE_DECIMALV2:
+                        has_error = decimalv2_pb_convert<double, DecimalV2Value>(_column_raw_ptrs[i], value);
+                        break;                         
+                    default:
+                        has_error = true;
+                        unsupport_convertion = true;
+                        break;
                     }
-                    break;
-                case FieldDescriptor::CppType::CPPTYPE_FLOAT:
+                    if (unsupport_convertion) {
+                        error_msg << "Dont support " << field->type_name() << " to " << slot->type().debug_string() << " convert for protobuf data type. "
+                                    << "The column is '" << slot->col_name() << ".";
+                    } else if (has_error) {
+                        error_msg << "Value '" << std::to_string(value) << "' is out of range. "
+                                    << "The type of '" << slot->col_name() << "' is " << slot->type().debug_string();
+                    }                     
+                }
+                break;
+            case PBFieldDescriptor::CppType::CPPTYPE_FLOAT:
+                {
+                    float value = reflection->GetFloat(*mutable_msg, field);
+                    switch (slot->type().type)
                     {
-                        float value = reflection->GetFloat(*mutable_msg, field);
-                        has_error = converter.convert_func(_column_raw_ptrs[i], value, _strict_mode);
-                        if (has_error) {
-                            error_msg << "Value '" << std::to_string(value) << "' is out of range. "
-                                      << "The type of '" << slot->col_name() << "' is " << slot->type().debug_string();
-                        }                    
+                    case LogicalType::TYPE_TINYINT:
+                        has_error = float_to_integer_pb_convert<float, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_TINYINT:
+                        has_error = float_to_integer_pb_convert<float, uint8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_SMALLINT:
+                        has_error = float_to_integer_pb_convert<float, int16_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_SMALLINT:
+                        has_error = float_to_integer_pb_convert<float, uint16_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_INT:
+                        has_error = float_to_integer_pb_convert<float, int32_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_INT:
+                        has_error = float_to_integer_pb_convert<float, uint32_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_BIGINT:
+                        has_error = float_to_integer_pb_convert<float, int64_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_BIGINT:
+                        has_error = float_to_integer_pb_convert<float, uint64_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_LARGEINT:
+                        has_error = float_to_integer_pb_convert<float, int128_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_FLOAT:
+                        has_error = append_pb_convert<float, float>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_DOUBLE:
+                        has_error = append_pb_convert<float, double>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_CHAR:
+                        has_error = float_to_integer_pb_convert<float, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_BOOLEAN:
+                        has_error = float_to_integer_pb_convert<float, uint8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_DECIMAL32:
+                        // TODO: decimal_scale 
+                        has_error = decimalv3_float_double_pb_convert<float, int32_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        break;
+                    case LogicalType::TYPE_DECIMAL64:
+                        // TODO: decimal_scale 
+                        has_error = decimalv3_float_double_pb_convert<float, int64_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        break;
+                    case LogicalType::TYPE_DECIMAL128:
+                        // TODO: decimal_scale 
+                        has_error = decimalv3_float_double_pb_convert<float, int128_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        break;
+                    case LogicalType::TYPE_DECIMALV2:
+                        has_error = decimalv2_pb_convert<float, DecimalV2Value>(_column_raw_ptrs[i], value);
+                        break;                         
+                    default:
+                        has_error = true;
+                        unsupport_convertion = true;
+                        break;
                     }
-                    break;
-                case FieldDescriptor::CppType::CPPTYPE_BOOL:
+                    if (unsupport_convertion) {
+                        error_msg << "Dont support " << field->type_name() << " to " << slot->type().debug_string() << " convert for protobuf data type. "
+                                    << "The column is '" << slot->col_name() << ".";
+                    } else if (has_error) {
+                        error_msg << "Value '" << std::to_string(value) << "' is out of range. "
+                                    << "The type of '" << slot->col_name() << "' is " << slot->type().debug_string();
+                    }               
+                }
+                break;
+            case PBFieldDescriptor::CppType::CPPTYPE_BOOL:
+                {
+                    bool value = reflection->GetBool(*mutable_msg, field);
+                    switch (slot->type().type)
                     {
-                        bool value = reflection->GetBool(*mutable_msg, field);
-                        has_error = converter.convert_func(_column_raw_ptrs[i], value, _strict_mode);
-                        if (has_error) {
-                            error_msg << "Value '" << std::to_string(value) << "' is out of range. "
-                                      << "The type of '" << slot->col_name() << "' is " << slot->type().debug_string();
-                        }                    
+                    case LogicalType::TYPE_TINYINT:
+                        has_error = integer_to_integer_pb_convert<uint8_t, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_TINYINT:
+                        has_error = append_pb_convert<uint8_t, uint8_t>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_SMALLINT:
+                        has_error = append_pb_convert<uint8_t, int16_t>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_SMALLINT:
+                        has_error = append_pb_convert<uint8_t, uint16_t>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_INT:
+                        has_error = append_pb_convert<uint8_t, int32_t>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_INT:
+                        has_error = append_pb_convert<uint8_t, uint32_t>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_BIGINT:
+                        has_error = append_pb_convert<uint8_t, int64_t>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_UNSIGNED_BIGINT:
+                        has_error = append_pb_convert<uint8_t, uint64_t>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_LARGEINT:
+                        has_error = append_pb_convert<uint8_t, int128_t>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_FLOAT:
+                        has_error = append_pb_convert<uint8_t, float>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_DOUBLE:
+                        has_error = append_pb_convert<uint8_t, double>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_CHAR:
+                        has_error = integer_to_integer_pb_convert<uint8_t, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        break;
+                    case LogicalType::TYPE_BOOLEAN:
+                        has_error = append_pb_convert<uint8_t, uint8_t>(_column_raw_ptrs[i], value);
+                        break;
+                    case LogicalType::TYPE_DECIMAL32:
+                        // TODO: decimal_scale 
+                        has_error = decimalv3_pb_convert<uint8_t, int32_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        break;
+                    case LogicalType::TYPE_DECIMAL64:
+                        // TODO: decimal_scale 
+                        has_error = decimalv3_pb_convert<uint8_t, int64_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        break;
+                    case LogicalType::TYPE_DECIMAL128:
+                        // TODO: decimal_scale 
+                        has_error = decimalv3_pb_convert<uint8_t, int128_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        break;
+                    case LogicalType::TYPE_DECIMALV2:
+                        has_error = decimalv2_pb_convert<uint8_t, DecimalV2Value>(_column_raw_ptrs[i], value);
+                        break;                         
+                    default:
+                        has_error = true;
+                        unsupport_convertion = true;
+                        break;
                     }
-                    break;
-                case FieldDescriptor::CppType::CPPTYPE_ENUM:
-                    {
-                        const EnumValueDescriptor* num_descriptor = reflection->GetEnum(*mutable_msg, field);
-                        std::string value = num_descriptor->name();
-                        has_error = converter.convert_func(_column_raw_ptrs[i], value, _strict_mode);
-                        if (has_error) {
-                            error_msg << "Value '" << value << "' is out of range. "
-                                      << "The type of '" << slot->col_name() << "' is " << slot->type().debug_string();
-                        }               
+                    if (unsupport_convertion) {
+                        error_msg << "Dont support " << field->type_name() << " to " << slot->type().debug_string() << " convert for protobuf data type. "
+                                    << "The column is '" << slot->col_name() << ".";
+                    } else if (has_error) {
+                        error_msg << "Value '" << std::to_string(value) << "' is out of range. "
+                                    << "The type of '" << slot->col_name() << "' is " << slot->type().debug_string();
+                    }                
+                }
+                break;
+            case PBFieldDescriptor::CppType::CPPTYPE_ENUM:
+                {
+                    const PBEnumValueDescriptor* num_descriptor = reflection->GetEnum(*mutable_msg, field);
+                    std::string value = num_descriptor->name();
+                    if (slot->type().type != LogicalType::TYPE_VARCHAR) {
+                        has_error = true;
+                        unsupport_convertion = true;
+                        error_msg << "Dont support " << field->type_name() << " to " << slot->type().debug_string() << " convert for protobuf data type. "
+                                    << "The column is '" << slot->col_name() << ".";
+                        break;
                     }
-                    break;
-                case FieldDescriptor::CppType::CPPTYPE_STRING:
-                    {
-                        std::string value = reflection->GetString(*mutable_msg, field);
-                        has_error = converter.convert_func(_column_raw_ptrs[i], value, _strict_mode);
-                        if (has_error) {
-                            error_msg << "Value '" << std::to_string(value) << "' is out of range. "
-                                      << "The type of '" << slot->col_name() << "' is " << slot->type().debug_string();
-                        }            
+                    has_error = string_pb_convert(_column_raw_ptrs[i], value, _strict_mode, &slot->type());
+                    if (has_error) {
+                        error_msg << "Value '" << value << "' is out of range. "
+                                    << "The type of '" << slot->col_name() << "' is " << slot->type().debug_string();
+                    }               
+                }
+                break;
+            case PBFieldDescriptor::CppType::CPPTYPE_STRING:
+                {
+                    std::string value = reflection->GetString(*mutable_msg, field);
+                    if (slot->type().type != LogicalType::TYPE_VARCHAR) {
+                        has_error = true;
+                        unsupport_convertion = true;
+                        error_msg << "Dont support " << field->type_name() << " to " << slot->type().debug_string() << " convert for protobuf data type. "
+                                    << "The column is '" << slot->col_name() << ".";
+                        break;
                     }
-                    break;
-                case FieldDescriptor::CppType::CPPTYPE_MESSAGE:
-                    has_error = true;
-                    error_msg = "Dont support Message type for protobuf data type."
-                    break;
-                default:
-                    has_error = true;
-                    error_msg = "Unknown protobuf data type."
-                    break;
+                    has_error = string_pb_convert(_column_raw_ptrs[i], value, _strict_mode, &slot->type());
+                    if (has_error) {
+                        error_msg << "Value '" << value << "' is out of range. "
+                                    << "The type of '" << slot->col_name() << "' is " << slot->type().debug_string();
+                    }           
+                }
+                break;
+            case PBFieldDescriptor::CppType::CPPTYPE_MESSAGE:
+                has_error = true;
+                error_msg << "Dont support Message type for protobuf data type.";
+                break;
+            default:
+                has_error = true;
+                error_msg << "Unknown protobuf data type.";
+                break;
             }
             if (has_error) {
                 chunk->set_num_rows(num_rows);
                 if (_counter->num_rows_filtered++ < 50) {
                     _report_error(record.to_string(), error_msg.str());
                 }
+                break;
             }
-        }
+        } // end of for
         num_rows += !has_error;
     }
+    return Status::OK();
 }
 
 StatusOr<ChunkPtr> ProtobufScanner::get_next() {
     SCOPED_RAW_TIMER(&_counter->total_ns);
-    // 1. 第一步需要create chunk
+    if (_scan_range.ranges.size() == 0) {
+        return Status::EndOfFile("EOF of reading protobuf file");
+    }
+    std::shared_ptr<SequentialFile> file;
+    const TBrokerRangeDesc& range_desc = _scan_range.ranges[0];
+    Status st = create_sequential_file(range_desc, _scan_range.broker_addresses[0], _scan_range.params, &file);
+    if (!st.ok()) {
+        LOG(WARNING) << "Failed to create sequential files: " << st.to_string();
+        return st;
+    }
+
     ChunkPtr src_chunk;
     RETURN_IF_ERROR(_create_src_chunk(&src_chunk));
     const int chunk_capacity = _state->chunk_size();
     src_chunk->reserve(chunk_capacity);
     src_chunk->set_num_rows(0);
-    RETURN_IF_ERROR(_parse_protobuf(src_chunk.get()));
-    return materialize(nullptr, cast_chunk);
+    RETURN_IF_ERROR(_parse_protobuf(src_chunk.get(), file));
+    return materialize(nullptr, src_chunk);
 }
 
 void ProtobufScanner::close() {

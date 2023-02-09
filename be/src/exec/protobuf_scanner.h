@@ -16,7 +16,7 @@
 
 #include <string_view>
 
-#include "formats/protobuf/protobuf_to_starrocks_converter.h"
+#include "exec/protobuf_to_starrocks_converter.h"
 #include "column/nullable_column.h"
 #include "common/compiler_util.h"
 #include "exec/file_scanner.h"
@@ -38,7 +38,7 @@ extern "C" {
 
 namespace starrocks {
 
-class ProtobufScanner : public FileScanner {
+class ProtobufScanner final : public FileScanner {
 public:
     // TODO: 
     // 1. 记得把cpp文件加入到makefile里，和jsonscanner类似
@@ -80,14 +80,17 @@ public:
     void close() override;
 
 private:
+    Status _create_src_chunk(ChunkPtr* chunk);
+    Status _parse_protobuf(Chunk* chunk, std::shared_ptr<SequentialFile> file);
+    void _report_error(const std::string& line, const std::string& err_msg);
     const TBrokerScanRange& _scan_range;
     serdes_t* _serdes;
-    const std::string _message_type;
+    std::string _schema_text;
+    std::string _message_type;
     // 定义一个C风格的buffer，用于存放serdes库的错误信息
-    char _err_msg[512];
+    char _err_buf[512];
     std::vector<Column*> _column_raw_ptrs;
-    static std::once_flag _once_flag;
-    const std::string _schema_text;
+    ByteBufferPtr _parser_buf;
 };
 
 } // namespace starrocks
