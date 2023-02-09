@@ -16,7 +16,7 @@
 
 #include <string_view>
 
-#include "formats/protobuf/converter.h"
+#include "formats/protobuf/protobuf_to_starrocks_converter.h"
 #include "column/nullable_column.h"
 #include "common/compiler_util.h"
 #include "exec/file_scanner.h"

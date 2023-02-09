@@ -126,7 +126,6 @@ Status ProtobufScanner::open() {
  *    b. 还有be的调用pbscanner的流程，这个应该也比较简单
  * 2. pbscanner的主流程写完了，但是没有做测试
  * 3. list和map没有支持
- * 4. conveter map的初始化没有做，std::call_once。这个比较简单。
  */
 
 Status ProtobufScanner::_create_src_chunk(ChunkPtr* chunk) {
@@ -195,7 +194,7 @@ Status _parse_protobuf(Chunk* chunk) {
             if (!schema) {
                 if (_counter->num_rows_filtered++ < 50) {
                     std::stringstream error_msg;
-                    error_msg << strings::Substitute("Failed to get schema: $0, schema_id is $1.", std::string(errstr), to_string(schema_id));
+                    error_msg << strings::Substitute("Failed to get schema: $0, schema_id is $1.", std::string(errstr), std::to_string(schema_id));
                     _report_error(record.to_string(), error_msg.str());
                 }
                 continue;

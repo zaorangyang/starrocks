@@ -1,4 +1,6 @@
-#include "formats/protobuf/converter.h"
+#include "formats/protobuf/protobuf_to_starrocks_converter.h"
+
+namespace starrocks {
 
 const std::unordered_map<FieldDescriptor::CppType, std::unordered_map<LogicalType, PbConverter>> pb_conver_map;
 
@@ -161,3 +163,5 @@ void init_pb_conver_map() {
     };
     pb_conver_map.insert(FieldDescriptor::CppType::CPPTYPE_STRING, string_pb_convert_map);
 }
+
+} // namespace starrocks
