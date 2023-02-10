@@ -97,6 +97,7 @@ set(UTIL_FILES
   lru_cache.cpp
   tdigest.cpp
   debug/query_trace_impl.cpp
+  confluent_schema_registry.cpp
 )
 
 add_library(Util STATIC

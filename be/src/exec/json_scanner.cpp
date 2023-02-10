@@ -121,6 +121,9 @@ void JsonScanner::close() {
     FileScanner::close();
 }
 
+// 整个json_types的构建似乎是这样的，遍历src_slot_type，对于每个src_slot_type
+// json解析这块，_construct_json_types这个函数，除了TYPE_ARRAY这个类型外，新建的json_type都和sr表的type是一致的，
+// 为什么要把TYPE_ARRAY区别对待呢？这里有什么上下文吗
 Status JsonScanner::_construct_json_types() {
     size_t slot_size = _src_slot_descriptors.size();
     _json_types.resize(slot_size);
@@ -214,6 +217,8 @@ Status JsonScanner::_construct_cast_exprs() {
             continue;
         }
 
+        // 这里的意思是我们先解析出来符合json type的数据，然后再把json type数据转换为sr表的type
+        // 
         auto& from_type = _json_types[column_pos];
         auto& to_type = slot_desc->type();
         Expr* slot = _pool.add(new ColumnRef(slot_desc));
@@ -277,6 +282,8 @@ Status JsonScanner::_create_src_chunk(ChunkPtr* chunk) {
             continue;
         }
 
+        // 整体上来看，json和csv create_chunk的逻辑是一样的，但是create_column这一块有一些差异
+        // json是获取的_json_types的东西，而csv直接获取的src_slot，为什么有这种差别。
         // The columns in source chunk are all in NullableColumn type;
         auto col = ColumnHelper::create_column(_json_types[column_pos], true);
         (*chunk)->append_column(col, slot_desc->id());

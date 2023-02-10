@@ -90,6 +90,7 @@ set(EXEC_FILES
     hdfs_scanner_text.cpp
     json_scanner.cpp
     json_parser.cpp
+    protobuf_scanner.cpp
     project_node.cpp
     dict_decode_node.cpp
     repeat_node.cpp
