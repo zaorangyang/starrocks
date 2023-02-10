@@ -359,6 +359,7 @@ endif ()
 
 add_executable(starrocks_test ${EXEC_FILES})
 
+message(STATUS "yzryzr ${TEST_LINK_LIBS}")
 TARGET_LINK_LIBRARIES(starrocks_test ${TEST_LINK_LIBS})
 SET_TARGET_PROPERTIES(starrocks_test PROPERTIES COMPILE_FLAGS "-fno-access-control")
 

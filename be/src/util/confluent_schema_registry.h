@@ -20,10 +20,17 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+#include <stdio.h>
+#include <arpa/inet.h>
 #include "libserdes/serdes.h"
 #ifdef __cplusplus
 }
 #endif
+
+namespace starrocks {
 
 uint32_t get_schema_id(serdes_t *sd, const uint8_t **payloadp, size_t *sizep, char *errstr, int errstr_size);
 
@@ -34,3 +41,5 @@ void *pb_schema_load_cb (serdes_schema_t *ss,
                         void *opaque);
 
 void pb_schema_unload_cb (serdes_schema_t *ss, void *schema_obj, void *opaque);
+
+} // namespace starrocks

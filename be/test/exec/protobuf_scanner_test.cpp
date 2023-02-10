@@ -115,7 +115,7 @@ TEST_F(ProtobufScannerTest, test_basic) {
     range.__set_path("./be/test/exec/test_data/protobuf_scanner/test_basic.dat");
     ranges.emplace_back(range);
 
-    std::string pb_schema_path = "./be/test/exec/test_data/protobuf_scanner/test_basic.proto"
+    std::string pb_schema_path = "./be/test/exec/test_data/protobuf_scanner/test_basic.proto";
     std::string message_type = "SearchRequest";
     auto scanner = create_protobuf_scanner(types, ranges, {"page_number", "result_per_page"}, pb_schema_path, message_type);
 

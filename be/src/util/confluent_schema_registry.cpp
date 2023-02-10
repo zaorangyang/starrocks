@@ -34,6 +34,11 @@
 
 #include "util/confluent_schema_registry.h"
 
+#define SERDES_FRAMING_CP1 5
+#define SERDES_FRAMING_NONE 0
+
+namespace starrocks {
+
 uint32_t get_schema_id(serdes_t *sd, const uint8_t **payloadp, size_t *sizep, char *errstr, int errstr_size) {
     const uint8_t *payload = *payloadp;
     size_t size = *sizep;
@@ -87,3 +92,5 @@ void pb_schema_unload_cb (serdes_schema_t *ss, void *schema_obj,
                                    void *opaque) {
         free(schema_obj);
 }
+
+} // namespace starrocks

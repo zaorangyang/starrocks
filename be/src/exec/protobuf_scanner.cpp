@@ -21,7 +21,7 @@
 #include <memory>
 #include <sstream>
 #include <utility>
-
+#include "exec/protobuf_to_starrocks_converter.h"
 #include "column/chunk.h"
 #include "column/column_helper.h"
 #include "exec/json_parser.h"
@@ -167,17 +167,30 @@ Status ProtobufScanner::_parse_protobuf(Chunk* chunk, std::shared_ptr<Sequential
         // Step1: fetch one protobuf message 
         const uint8_t* data{};
         size_t length = 0;
-        auto* stream_file = down_cast<StreamLoadPipeInputStream*>(file->stream().get());
-        {
-            SCOPED_RAW_TIMER(&_counter->file_read_ns);
-            ASSIGN_OR_RETURN(_parser_buf, stream_file->pipe()->read());
-        }
-        data = reinterpret_cast<uint8_t*>(_parser_buf->ptr);
-        length = _parser_buf->remaining();
+#ifdef BE_TEST
+
+    [[maybe_unused]] size_t message_size = 0;
+    ASSIGN_OR_RETURN(auto nread, file->read(_buf.data(), _buf_size));
+    if (nread == 0) {
+        return Status::EndOfFile("EOF of reading file");
+    }
+
+    data = reinterpret_cast<uint8_t*>(_buf.data());
+    length = nread;
+
+#else
+    auto* stream_file = down_cast<StreamLoadPipeInputStream*>(file->stream().get());
+    {
+        SCOPED_RAW_TIMER(&_counter->file_read_ns);
+        ASSIGN_OR_RETURN(_parser_buf, stream_file->pipe()->read());
+    }
+    data = reinterpret_cast<uint8_t*>(_parser_buf->ptr);
+    length = _parser_buf->remaining();
+#endif
         Slice record(data, length);
         const char* schema_text = nullptr;
         if (_schema_text.size() == 0) {
-            // Step2: fetch message schema ID
+            // fetch message schema ID
             uint32_t schema_id = get_schema_id(_serdes, &data, &length, _err_buf, sizeof(_err_buf));
             if (schema_id == -1) {
                 if (_counter->num_rows_filtered++ < 50) {
@@ -188,7 +201,7 @@ Status ProtobufScanner::_parse_protobuf(Chunk* chunk, std::shared_ptr<Sequential
                 continue;
             }
 
-            // Step3: fetch message schema
+            // fetch message schema
             serdes_schema_t *schema = serdes_schema_get(_serdes, NULL, schema_id, _err_buf, sizeof(_err_buf));
             if (!schema) {
                 if (_counter->num_rows_filtered++ < 50) {
@@ -211,7 +224,7 @@ Status ProtobufScanner::_parse_protobuf(Chunk* chunk, std::shared_ptr<Sequential
             schema_text = _schema_text.c_str();
         }
 
-        // Step4: parse pb
+        // parse pb
         PBArrayInputStream raw_input(schema_text, strlen(schema_text));
         PBTokenizer input(&raw_input, NULL);
         PBFileDescriptorProto file_desc_proto;
@@ -472,16 +485,22 @@ Status ProtobufScanner::_parse_protobuf(Chunk* chunk, std::shared_ptr<Sequential
                         has_error = integer_to_integer_pb_convert<uint32_t, uint8_t>(_column_raw_ptrs[i], value, _strict_mode);
                         break;
                     case LogicalType::TYPE_DECIMAL32:
-                        // TODO: decimal_scale 
-                        has_error = decimalv3_pb_convert<uint32_t, int32_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        {
+                            int64_t scale_value = value;
+                            has_error = decimalv3_pb_convert<int64_t, int32_t>(_column_raw_ptrs[i], scale_value, _strict_mode, slot->type().scale);
+                        }
                         break;
                     case LogicalType::TYPE_DECIMAL64:
-                        // TODO: decimal_scale 
-                        has_error = decimalv3_pb_convert<uint32_t, int64_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        {
+                            int64_t scale_value = value;
+                            has_error = decimalv3_pb_convert<int64_t, int64_t>(_column_raw_ptrs[i], scale_value, _strict_mode, slot->type().scale);
+                        }
                         break;
                     case LogicalType::TYPE_DECIMAL128:
-                        // TODO: decimal_scale 
-                        has_error = decimalv3_pb_convert<uint32_t, int128_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        {
+                            int64_t scale_value = value;
+                            has_error = decimalv3_pb_convert<int64_t, int128_t>(_column_raw_ptrs[i], scale_value, _strict_mode, slot->type().scale);
+                        }
                         break;
                     case LogicalType::TYPE_DECIMALV2:
                         has_error = decimalv2_pb_convert<uint32_t, DecimalV2Value>(_column_raw_ptrs[i], value);
@@ -545,16 +564,22 @@ Status ProtobufScanner::_parse_protobuf(Chunk* chunk, std::shared_ptr<Sequential
                         has_error = integer_to_integer_pb_convert<uint64_t, uint8_t>(_column_raw_ptrs[i], value, _strict_mode);
                         break;
                     case LogicalType::TYPE_DECIMAL32:
-                        // TODO: decimal_scale 
-                        has_error = decimalv3_pb_convert<uint64_t, int32_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        {
+                            int128_t scale_value = value;
+                            has_error = decimalv3_pb_convert<int128_t, int32_t>(_column_raw_ptrs[i], scale_value, _strict_mode, slot->type().scale);
+                        }
                         break;
                     case LogicalType::TYPE_DECIMAL64:
-                        // TODO: decimal_scale 
-                        has_error = decimalv3_pb_convert<uint64_t, int64_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        {
+                            int128_t scale_value = value;
+                            has_error = decimalv3_pb_convert<int128_t, int64_t>(_column_raw_ptrs[i], scale_value, _strict_mode, slot->type().scale);
+                        }
                         break;
                     case LogicalType::TYPE_DECIMAL128:
-                        // TODO: decimal_scale 
-                        has_error = decimalv3_pb_convert<uint64_t, int128_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        {
+                            int128_t scale_value = value;
+                            has_error = decimalv3_pb_convert<int128_t, int128_t>(_column_raw_ptrs[i], scale_value, _strict_mode, slot->type().scale);
+                        }
                         break;
                     case LogicalType::TYPE_DECIMALV2:
                         has_error = decimalv2_pb_convert<uint64_t, DecimalV2Value>(_column_raw_ptrs[i], value);
@@ -764,16 +789,22 @@ Status ProtobufScanner::_parse_protobuf(Chunk* chunk, std::shared_ptr<Sequential
                         has_error = append_pb_convert<uint8_t, uint8_t>(_column_raw_ptrs[i], value);
                         break;
                     case LogicalType::TYPE_DECIMAL32:
-                        // TODO: decimal_scale 
-                        has_error = decimalv3_pb_convert<uint8_t, int32_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        {
+                            int32_t scale_value = value;
+                            has_error = decimalv3_pb_convert<int32_t, int32_t>(_column_raw_ptrs[i], scale_value, _strict_mode, slot->type().scale);
+                        }
                         break;
                     case LogicalType::TYPE_DECIMAL64:
-                        // TODO: decimal_scale 
-                        has_error = decimalv3_pb_convert<uint8_t, int64_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        {
+                            int32_t scale_value = value;
+                            has_error = decimalv3_pb_convert<int32_t, int64_t>(_column_raw_ptrs[i], scale_value, _strict_mode, slot->type().scale);
+                        }
                         break;
                     case LogicalType::TYPE_DECIMAL128:
-                        // TODO: decimal_scale 
-                        has_error = decimalv3_pb_convert<uint8_t, int128_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        {
+                            int32_t scale_value = value;
+                            has_error = decimalv3_pb_convert<int32_t, int128_t>(_column_raw_ptrs[i], scale_value, _strict_mode, slot->type().scale);
+                        }
                         break;
                     case LogicalType::TYPE_DECIMALV2:
                         has_error = decimalv2_pb_convert<uint8_t, DecimalV2Value>(_column_raw_ptrs[i], value);

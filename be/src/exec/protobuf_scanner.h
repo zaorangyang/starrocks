@@ -16,7 +16,6 @@
 
 #include <string_view>
 
-#include "exec/protobuf_to_starrocks_converter.h"
 #include "column/nullable_column.h"
 #include "common/compiler_util.h"
 #include "exec/file_scanner.h"
@@ -91,6 +90,10 @@ private:
     char _err_buf[512];
     std::vector<Column*> _column_raw_ptrs;
     ByteBufferPtr _parser_buf;
+#if BE_TEST
+    size_t _buf_size = 1048576; // 1MB, the buf size for parsing protobuf in unit test
+    raw::RawVector<char> _buf;
+#endif
 };
 
 } // namespace starrocks
