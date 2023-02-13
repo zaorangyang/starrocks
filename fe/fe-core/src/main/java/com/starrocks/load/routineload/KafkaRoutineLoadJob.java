@@ -105,6 +105,7 @@ public class KafkaRoutineLoadJob extends RoutineLoadJob {
     // kafka properties, property prefix will be mapped to kafka custom parameters, which can be extended in the future
     private Map<String, String> customProperties = Maps.newHashMap();
     private Map<String, String> convertedCustomProperties = Maps.newHashMap();
+    private String pbMessageType;
 
     public String getConfluentSchemaRegistryUrl() {
         return confluentSchemaRegistryUrl;
@@ -127,6 +128,14 @@ public class KafkaRoutineLoadJob extends RoutineLoadJob {
         this.brokerList = brokerList;
         this.topic = topic;
         this.progress = new KafkaProgress();
+    }
+
+    public String getPbMessageType() {
+        return pbMessageType;
+    }
+
+    public void setPbMessageType(String pbMessageType) {
+        this.pbMessageType = pbMessageType;
     }
 
     public String getTopic() {
@@ -477,6 +486,10 @@ public class KafkaRoutineLoadJob extends RoutineLoadJob {
 
         if (stmt.getConfluentSchemaRegistryUrl() != null) {
             setConfluentSchemaRegistryUrl(stmt.getConfluentSchemaRegistryUrl());
+        }
+
+        if (stmt.getPbMessageType() != null) {
+            setPbMessageType(stmt.getPbMessageType());
         }
 
         setDefaultKafkaGroupID();

@@ -169,6 +169,10 @@ public class KafkaTaskInfo extends RoutineLoadTaskInfo {
         if ((routineLoadJob).getConfluentSchemaRegistryUrl() != null) {
             tKafkaLoadInfo.setConfluent_schema_registry_url((routineLoadJob).getConfluentSchemaRegistryUrl());
         }
+        if ((routineLoadJob).getPbMessageType() != null) {
+            tKafkaLoadInfo.setPb_message_type((routineLoadJob).getPbMessageType());
+        }
+
         tRoutineLoadTask.setKafka_load_info(tKafkaLoadInfo);
         tRoutineLoadTask.setType(TLoadSourceType.KAFKA);
         tRoutineLoadTask.setParams(plan(routineLoadJob));

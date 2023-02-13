@@ -62,8 +62,11 @@ public:
     // 还有一个问题，scaner是负责owern和registry的交互逻辑，还是仅仅持有和registry交互的handle。这两个做法都需要我们把相关参数传给scanner，如何传。
     // 
 
+    // ProtobufScanner(RuntimeState* state, RuntimeProfile* profile, const TBrokerScanRange& scan_range,
+    //             ScannerCounter* counter, serdes_t *serdes, const std::string message_type);
+
     ProtobufScanner(RuntimeState* state, RuntimeProfile* profile, const TBrokerScanRange& scan_range,
-                ScannerCounter* counter, serdes_t *serdes, const std::string message_type);
+                ScannerCounter* counter);
 
     // 因为无法在单测里测试和schema交互的逻辑，所以这里引入一个新的构造函数用于单测
     ProtobufScanner(RuntimeState* state, RuntimeProfile* profile, const TBrokerScanRange& scan_range,

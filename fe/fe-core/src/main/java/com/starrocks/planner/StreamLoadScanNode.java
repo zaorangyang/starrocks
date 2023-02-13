@@ -214,6 +214,15 @@ public class StreamLoadScanNode extends LoadScanNode {
         params.setEnclose(streamLoadInfo.getEnclose());
         params.setEscape(streamLoadInfo.getEscape());
         params.setStrict_mode(streamLoadInfo.isStrictMode());
+
+        if (streamLoadInfo.getConfluentSchemaRegistryUrl() != null) {
+            params.setConfluent_schema_registry_url(streamLoadInfo.getConfluentSchemaRegistryUrl());
+        }
+
+        if (streamLoadInfo.getPbMessageType() != null) {
+            params.setPb_message_type(streamLoadInfo.getPbMessageType());
+        }
+
         initColumns();
         initWhereExpr(streamLoadInfo.getWhereExpr(), analyzer);
     }

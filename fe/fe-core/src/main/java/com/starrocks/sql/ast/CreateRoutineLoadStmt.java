@@ -112,6 +112,8 @@ public class CreateRoutineLoadStmt extends DdlStmt {
     public static final String KAFKA_DEFAULT_OFFSETS = "kafka_default_offsets";
     // optional
     public static final String CONFLUENT_SCHEMA_REGISTRY_URL = "confluent.schema.registry.url";
+    // optional
+    public static final String PB_MESSAGE_TYPE = "pb_messsage_type";
 
     // pulsar type properties
     public static final String PULSAR_SERVICE_URL_PROPERTY = "pulsar_service_url";
@@ -147,6 +149,7 @@ public class CreateRoutineLoadStmt extends DdlStmt {
             .add(KAFKA_PARTITIONS_PROPERTY)
             .add(KAFKA_OFFSETS_PROPERTY)
             .add(CONFLUENT_SCHEMA_REGISTRY_URL)
+            .add(PB_MESSAGE_TYPE)
             .build();
 
     private static final ImmutableSet<String> PULSAR_PROPERTIES_SET = new ImmutableSet.Builder<String>()
@@ -166,6 +169,7 @@ public class CreateRoutineLoadStmt extends DdlStmt {
     }
 
     private String confluentSchemaRegistryUrl;
+    private String pbMessageType;
     private LabelName labelName;
     private final String tableName;
     private final List<ParseNode> loadPropertyList;
@@ -231,6 +235,14 @@ public class CreateRoutineLoadStmt extends DdlStmt {
         this.jobProperties = jobProperties == null ? Maps.newHashMap() : jobProperties;
         this.typeName = typeName.toUpperCase();
         this.dataSourceProperties = dataSourceProperties;
+    }
+
+    public String getPbMessageType() {
+        return pbMessageType;
+    }
+
+    public void setPbMessageType(String pbMessageType) {
+        this.pbMessageType = pbMessageType;
     }
 
     public LabelName getLabelName() {
@@ -564,6 +576,7 @@ public class CreateRoutineLoadStmt extends DdlStmt {
         if (kafkaOffsetsString != null) {
             analyzeKafkaOffsetProperty(kafkaOffsetsString, kafkaPartitionOffsets);
         }
+        String pbMessageTypeString = dataSourceProperties.get(PB_MESSAGE_TYPE);
         String confluentSchemaRegistryUrlString = dataSourceProperties.get(CONFLUENT_SCHEMA_REGISTRY_URL);
         if (confluentSchemaRegistryUrlString == null) {
             if (format == null) {
@@ -580,8 +593,12 @@ public class CreateRoutineLoadStmt extends DdlStmt {
             if (format.equals("avro") || format.equals("protobuf")) {
                 throw new AnalysisException(CONFLUENT_SCHEMA_REGISTRY_URL + " is a required property");
             }
+            if (format.equals("protobuf")) {
+                throw new AnalysisException(PB_MESSAGE_TYPE + " is a required property");
+            }
         } else {
             confluentSchemaRegistryUrl = confluentSchemaRegistryUrlString;
+            pbMessageType = pbMessageTypeString;
         }
     }
 

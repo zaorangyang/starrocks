@@ -206,6 +206,9 @@ public abstract class RoutineLoadJob extends AbstractTxnStateChangeCallback impl
     private static final String PROPS_JSONPATHS = "jsonpaths";
     private static final String PROPS_JSONROOT = "json_root";
 
+    private String confluentSchemaRegistryUrl;
+    private String pbMessageType;
+
     protected int currentTaskConcurrentNum;
     protected RoutineLoadProgress progress;
 
@@ -331,6 +334,8 @@ public abstract class RoutineLoadJob extends AbstractTxnStateChangeCallback impl
             jobProperties.put(PROPS_FORMAT, "avro");
         } else if (stmt.getFormat().equals("protobuf")) {
             jobProperties.put(PROPS_FORMAT, "protobuf");
+            this.confluentSchemaRegistryUrl = stmt.getConfluentSchemaRegistryUrl();
+            this.pbMessageType = stmt.getPbMessageType();
         } else {
             throw new UserException("Invalid format type.");
         }
@@ -359,6 +364,22 @@ public abstract class RoutineLoadJob extends AbstractTxnStateChangeCallback impl
         if (routineLoadDesc.getPartitionNames() != null) {
             partitions = routineLoadDesc.getPartitionNames();
         }
+    }
+
+    public String getConfluentSchemaRegistryUrl() {
+        return confluentSchemaRegistryUrl;
+    }
+
+    public void setConfluentSchemaRegistryUrl(String confluentSchemaRegistryUrl) {
+        this.confluentSchemaRegistryUrl = confluentSchemaRegistryUrl;
+    }
+
+    public String getPbMessageType() {
+        return pbMessageType;
+    }
+
+    public void setPbMessageType(String pbMessageType) {
+        this.pbMessageType = pbMessageType;
     }
 
     @Override

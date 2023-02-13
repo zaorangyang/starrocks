@@ -60,12 +60,19 @@ using PBReflection = google::protobuf::Reflection;
 using PBFieldDescriptor = google::protobuf::FieldDescriptor;
 using PBEnumValueDescriptor = google::protobuf::EnumValueDescriptor;
 
+// ProtobufScanner::ProtobufScanner(RuntimeState* state, RuntimeProfile* profile, const TBrokerScanRange& scan_range,
+//                          ScannerCounter* counter, serdes_t *serdes, const std::string message_type)
+//         : FileScanner(state, profile, scan_range.params, counter),
+//           _scan_range(scan_range),
+//           _serdes(serdes),
+//           _message_type(message_type) {}
+
 ProtobufScanner::ProtobufScanner(RuntimeState* state, RuntimeProfile* profile, const TBrokerScanRange& scan_range,
-                         ScannerCounter* counter, serdes_t *serdes, const std::string message_type)
+                         ScannerCounter* counter)
         : FileScanner(state, profile, scan_range.params, counter),
           _scan_range(scan_range),
-          _serdes(serdes),
-          _message_type(message_type) {}
+          _serdes(nullptr),
+          _message_type("") {}
 
 ProtobufScanner::ProtobufScanner(RuntimeState* state, RuntimeProfile* profile, const TBrokerScanRange& scan_range,
                 ScannerCounter* counter, const std::string schema_text, const std::string message_type)
@@ -74,12 +81,37 @@ ProtobufScanner::ProtobufScanner(RuntimeState* state, RuntimeProfile* profile, c
             _schema_text(schema_text),
             _message_type(message_type) {}
 
-ProtobufScanner::~ProtobufScanner() = default;
+ProtobufScanner::~ProtobufScanner() {
+    free(_serdes);
+}
 
 Status ProtobufScanner::open() {
     RETURN_IF_ERROR(FileScanner::open());
     if (_scan_range.ranges.empty()) {
         return Status::OK();
+    }
+    // 没有初始化serdes，从_scan_range取数据并做初始化
+    if (_serdes == nullptr || _message_type.size() == 0) {
+        std::string confluent_schema_registry_url;
+        if (!_scan_range.params.__isset.confluent_schema_registry_url) {
+            return Status::InternalError("'confluent_schema_registry_url' not set");
+        } else {
+            confluent_schema_registry_url = _scan_range.params.confluent_schema_registry_url;
+        }
+
+        serdes_conf_t* sconf = serdes_conf_new(NULL, 0, "schema.registry.url",
+                                            confluent_schema_registry_url.c_str(), NULL);
+        _serdes = serdes_new(sconf, _err_buf, sizeof(_err_buf));
+        if (!_serdes) {
+            LOG(ERROR) << "failed to create serdes handle: " << _err_buf;
+            return Status::InternalError("failed to create serdes handle");
+        }
+
+        if (!_scan_range.params.__isset.pb_message_type) {
+            return Status::InternalError("'pb_message_type' not set");
+        } else {
+            _message_type = _scan_range.params.pb_message_type;
+        }
     }
     return Status::OK();
 }

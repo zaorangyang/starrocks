@@ -77,6 +77,8 @@ public class StreamLoadInfo {
     private TCompressionType compressionType = TCompressionType.NO_COMPRESSION;
     private int loadParallelRequestNum = 0;
     private boolean enableReplicatedStorage = false;
+    private String confluentSchemaRegistryUrl;
+    private String pbMessageType;
 
     public StreamLoadInfo(TUniqueId id, long txnId, TFileType fileType, TFileFormatType formatType) {
         this.id = id;
@@ -95,6 +97,22 @@ public class StreamLoadInfo {
         this.jsonRoot = "";
         this.stripOuterArray = false;
         this.timeout = timeout;
+    }
+
+    public String getConfluentSchemaRegistryUrl() {
+        return confluentSchemaRegistryUrl;
+    }
+
+    public void setConfluentSchemaRegistryUrl(String confluentSchemaRegistryUrl) {
+        this.confluentSchemaRegistryUrl = confluentSchemaRegistryUrl;
+    }
+
+    public String getPbMessageType() {
+        return pbMessageType;
+    }
+
+    public void setPbMessageType(String pbMessageType) {
+        this.pbMessageType = pbMessageType;
     }
 
     public TUniqueId getId() {
@@ -430,6 +448,8 @@ public class StreamLoadInfo {
             compressionType = CompressionUtils.findTCompressionByName(
                     routineLoadJob.getSessionVariables().get(SessionVariable.LOAD_TRANSMISSION_COMPRESSION_TYPE));
         }
+        confluentSchemaRegistryUrl = routineLoadJob.getConfluentSchemaRegistryUrl();
+        pbMessageType = routineLoadJob.getPbMessageType();
     }
 
     // used for stream load

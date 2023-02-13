@@ -64,6 +64,7 @@ struct TKafkaLoadInfo {
     3: required map<i32, i64> partition_begin_offset;
     4: optional map<string, string> properties;
     5: optional string confluent_schema_registry_url;
+    6: optional string pb_message_type;
 }
 
 struct TPulsarLoadInfo {
