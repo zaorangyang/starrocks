@@ -72,14 +72,24 @@ ProtobufScanner::ProtobufScanner(RuntimeState* state, RuntimeProfile* profile, c
         : FileScanner(state, profile, scan_range.params, counter),
           _scan_range(scan_range),
           _serdes(nullptr),
-          _message_type("") {}
+          _message_type("") {
+#if BE_TEST
+    raw::RawVector<char> buf(_buf_size);
+    std::swap(buf, _buf);
+#endif
+}
 
 ProtobufScanner::ProtobufScanner(RuntimeState* state, RuntimeProfile* profile, const TBrokerScanRange& scan_range,
                 ScannerCounter* counter, const std::string schema_text, const std::string message_type)
         : FileScanner(state, profile, scan_range.params, counter),
             _scan_range(scan_range),
             _schema_text(schema_text),
-            _message_type(message_type) {}
+            _message_type(message_type) {
+#if BE_TEST
+    raw::RawVector<char> buf(_buf_size);
+    std::swap(buf, _buf);
+#endif
+}
 
 ProtobufScanner::~ProtobufScanner() {
     free(_serdes);
@@ -90,6 +100,7 @@ Status ProtobufScanner::open() {
     if (_scan_range.ranges.empty()) {
         return Status::OK();
     }
+#ifndef BE_TEST
     // 没有初始化serdes，从_scan_range取数据并做初始化
     if (_serdes == nullptr || _message_type.size() == 0) {
         std::string confluent_schema_registry_url;
@@ -113,6 +124,7 @@ Status ProtobufScanner::open() {
             _message_type = _scan_range.params.pb_message_type;
         }
     }
+#endif
     return Status::OK();
 }
 
@@ -930,7 +942,10 @@ StatusOr<ChunkPtr> ProtobufScanner::get_next() {
     const int chunk_capacity = _state->chunk_size();
     src_chunk->reserve(chunk_capacity);
     src_chunk->set_num_rows(0);
-    RETURN_IF_ERROR(_parse_protobuf(src_chunk.get(), file));
+    st = _parse_protobuf(src_chunk.get(), file);
+    if (!st.ok()) {
+        return st;
+    }
     return materialize(nullptr, src_chunk);
 }
 
