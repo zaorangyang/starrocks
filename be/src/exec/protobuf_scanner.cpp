@@ -83,6 +83,7 @@ ProtobufScanner::ProtobufScanner(RuntimeState* state, RuntimeProfile* profile, c
                 ScannerCounter* counter, const std::string schema_text, const std::string message_type)
         : FileScanner(state, profile, scan_range.params, counter),
             _scan_range(scan_range),
+            _serdes(nullptr),
             _schema_text(schema_text),
             _message_type(message_type) {
 #if BE_TEST
@@ -92,7 +93,9 @@ ProtobufScanner::ProtobufScanner(RuntimeState* state, RuntimeProfile* profile, c
 }
 
 ProtobufScanner::~ProtobufScanner() {
-    free(_serdes);
+    if (_serdes != nullptr) {
+        free(_serdes);
+    }
 }
 
 Status ProtobufScanner::open() {
@@ -213,23 +216,23 @@ Status ProtobufScanner::_parse_protobuf(Chunk* chunk, std::shared_ptr<Sequential
         size_t length = 0;
 #ifdef BE_TEST
 
-    [[maybe_unused]] size_t message_size = 0;
-    ASSIGN_OR_RETURN(auto nread, file->read(_buf.data(), _buf_size));
-    if (nread == 0) {
-        return Status::EndOfFile("EOF of reading file");
-    }
+        [[maybe_unused]] size_t message_size = 0;
+        ASSIGN_OR_RETURN(auto nread, file->read(_buf.data(), _buf_size));
+        if (nread == 0) {
+            return Status::EndOfFile("EOF of reading file");
+        }
 
-    data = reinterpret_cast<uint8_t*>(_buf.data());
-    length = nread;
+        data = reinterpret_cast<uint8_t*>(_buf.data());
+        length = nread;
 
 #else
-    auto* stream_file = down_cast<StreamLoadPipeInputStream*>(file->stream().get());
-    {
-        SCOPED_RAW_TIMER(&_counter->file_read_ns);
-        ASSIGN_OR_RETURN(_parser_buf, stream_file->pipe()->read());
-    }
-    data = reinterpret_cast<uint8_t*>(_parser_buf->ptr);
-    length = _parser_buf->remaining();
+        auto* stream_file = down_cast<StreamLoadPipeInputStream*>(file->stream().get());
+        {
+            SCOPED_RAW_TIMER(&_counter->file_read_ns);
+            ASSIGN_OR_RETURN(_parser_buf, stream_file->pipe()->read());
+        }
+        data = reinterpret_cast<uint8_t*>(_parser_buf->ptr);
+        length = _parser_buf->remaining();
 #endif
         Slice record(data, length);
         const char* schema_text = nullptr;
@@ -328,15 +331,34 @@ Status ProtobufScanner::_parse_protobuf(Chunk* chunk, std::shared_ptr<Sequential
         }
 
         const PBReflection* reflection = mutable_msg->GetReflection();
-        bool has_error = false;
+        bool no_error = true;
         bool unsupport_convertion = false;
         for (int i = 0; i < _src_slot_descriptors.size(); i++) {
             auto slot = _src_slot_descriptors[i];
             if (slot == nullptr) {
                 continue;
             }
-            const PBFieldDescriptor* field = message_desc->FindFieldByName(slot->col_name());
+            Column* cur_column = _column_raw_ptrs[i];
             std::stringstream error_msg;
+            // 整体的思路是这样的，如果在pb中没有找到对应的field，如果field是nullable的，那么对这个字段appendnull
+            // 如果不是nullable的，那么返回error
+            const PBFieldDescriptor* field = message_desc->FindFieldByName(slot->col_name());
+            if (field == nullptr) {
+                if (!slot->is_nullable()) {
+                    error_msg << "Dont find " << slot->col_name() << " column in pb message.";
+                    return Status::InternalError(error_msg.str());
+                }
+                auto* nullable = down_cast<NullableColumn*>(cur_column);
+                if (!nullable->append_nulls(1)) {
+                    error_msg << "Dont find " << slot->col_name() << " column in pb message, and append null error.";
+                    _report_error(record.to_string(), error_msg.str());
+                    chunk->set_num_rows(num_rows);
+                    break;  
+                } else {
+                    continue;
+                }    
+            }
+
             switch (field->cpp_type()) {
             case PBFieldDescriptor::CppType::CPPTYPE_INT32:
                 {
@@ -344,68 +366,68 @@ Status ProtobufScanner::_parse_protobuf(Chunk* chunk, std::shared_ptr<Sequential
                     switch (slot->type().type)
                     {
                     case LogicalType::TYPE_TINYINT:
-                        has_error = integer_to_integer_pb_convert<int32_t, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<int32_t, int8_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_UNSIGNED_TINYINT:
-                        has_error = integer_to_integer_pb_convert<int32_t, uint8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<int32_t, uint8_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_SMALLINT:
-                        has_error = integer_to_integer_pb_convert<int32_t, int16_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<int32_t, int16_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_UNSIGNED_SMALLINT:
-                        has_error = integer_to_integer_pb_convert<int32_t, uint16_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<int32_t, uint16_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_INT:
-                        has_error = append_pb_convert<int32_t, int32_t>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<int32_t, int32_t>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_UNSIGNED_INT:
-                        has_error = integer_to_integer_pb_convert<int32_t, uint32_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<int32_t, uint32_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_BIGINT:
-                        has_error = append_pb_convert<int32_t, int64_t>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<int32_t, int64_t>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_UNSIGNED_BIGINT:
-                        has_error = append_pb_convert<int32_t, uint64_t>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<int32_t, uint64_t>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_LARGEINT:
-                        has_error = append_pb_convert<int32_t, int128_t>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<int32_t, int128_t>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_FLOAT:
-                        has_error = append_pb_convert<int32_t, float>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<int32_t, float>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_DOUBLE:
-                        has_error = append_pb_convert<int32_t, double>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<int32_t, double>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_CHAR:
-                        has_error = integer_to_integer_pb_convert<int32_t, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<int32_t, int8_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_BOOLEAN:
-                        has_error = integer_to_integer_pb_convert<int32_t, uint8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<int32_t, uint8_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_DECIMAL32:
                         // TODO: decimal_scale 
-                        has_error = decimalv3_pb_convert<int32_t, int32_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        no_error = decimalv3_pb_convert<int32_t, int32_t>(cur_column, value, slot->is_nullable(), _strict_mode, slot->type().scale);
                         break;
                     case LogicalType::TYPE_DECIMAL64:
                         // TODO: decimal_scale 
-                        has_error = decimalv3_pb_convert<int32_t, int64_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        no_error = decimalv3_pb_convert<int32_t, int64_t>(cur_column, value, slot->is_nullable(), _strict_mode, slot->type().scale);
                         break;
                     case LogicalType::TYPE_DECIMAL128:
                         // TODO: decimal_scale 
-                        has_error = decimalv3_pb_convert<int32_t, int128_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        no_error = decimalv3_pb_convert<int32_t, int128_t>(cur_column, value, slot->is_nullable(), _strict_mode, slot->type().scale);
                         break;
                     case LogicalType::TYPE_DECIMALV2:
-                        has_error = decimalv2_pb_convert<int32_t, DecimalV2Value>(_column_raw_ptrs[i], value);
+                        no_error = decimalv2_pb_convert<int32_t, DecimalV2Value>(cur_column, value, slot->is_nullable());
                         break;                         
                     default:
-                        has_error = true;
+                        no_error = false;
                         unsupport_convertion = true;
                         break;
                     }
                     if (unsupport_convertion) {
                         error_msg << "Dont support " << field->type_name() << " to " << slot->type().debug_string() << " convert for protobuf data type. "
                                     << "The column is '" << slot->col_name() << ".";
-                    } else if (has_error) {
+                    } else if (!no_error) {
                         error_msg << "Value '" << std::to_string(value) << "' is out of range. "
                                     << "The type of '" << slot->col_name() << "' is " << slot->type().debug_string();
                     }
@@ -417,68 +439,68 @@ Status ProtobufScanner::_parse_protobuf(Chunk* chunk, std::shared_ptr<Sequential
                     switch (slot->type().type)
                     {
                     case LogicalType::TYPE_TINYINT:
-                        has_error = integer_to_integer_pb_convert<int64_t, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<int64_t, int8_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_UNSIGNED_TINYINT:
-                        has_error = integer_to_integer_pb_convert<int64_t, uint8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<int64_t, uint8_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_SMALLINT:
-                        has_error = integer_to_integer_pb_convert<int64_t, int16_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<int64_t, int16_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_UNSIGNED_SMALLINT:
-                        has_error = integer_to_integer_pb_convert<int64_t, uint16_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<int64_t, uint16_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_INT:
-                        has_error = integer_to_integer_pb_convert<int64_t, int32_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<int64_t, int32_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_UNSIGNED_INT:
-                        has_error = integer_to_integer_pb_convert<int64_t, uint32_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<int64_t, uint32_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_BIGINT:
-                        has_error = append_pb_convert<int64_t, int64_t>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<int64_t, int64_t>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_UNSIGNED_BIGINT:
-                        has_error = append_pb_convert<int64_t, uint64_t>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<int64_t, uint64_t>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_LARGEINT:
-                        has_error = append_pb_convert<int64_t, int128_t>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<int64_t, int128_t>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_FLOAT:
-                        has_error = append_pb_convert<int64_t, float>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<int64_t, float>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_DOUBLE:
-                        has_error = append_pb_convert<int64_t, double>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<int64_t, double>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_CHAR:
-                        has_error = integer_to_integer_pb_convert<int64_t, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<int64_t, int8_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_BOOLEAN:
-                        has_error = integer_to_integer_pb_convert<int64_t, uint8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<int64_t, uint8_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_DECIMAL32:
                         // TODO: decimal_scale 
-                        has_error = decimalv3_pb_convert<int64_t, int32_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        no_error = decimalv3_pb_convert<int64_t, int32_t>(cur_column, value, slot->is_nullable(), _strict_mode, slot->type().scale);
                         break;
                     case LogicalType::TYPE_DECIMAL64:
                         // TODO: decimal_scale 
-                        has_error = decimalv3_pb_convert<int64_t, int64_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        no_error = decimalv3_pb_convert<int64_t, int64_t>(cur_column, value, slot->is_nullable(), _strict_mode, slot->type().scale);
                         break;
                     case LogicalType::TYPE_DECIMAL128:
                         // TODO: decimal_scale 
-                        has_error = decimalv3_pb_convert<int64_t, int128_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        no_error = decimalv3_pb_convert<int64_t, int128_t>(cur_column, value, slot->is_nullable(), _strict_mode, slot->type().scale);
                         break;
                     case LogicalType::TYPE_DECIMALV2:
-                        has_error = decimalv2_pb_convert<int64_t, DecimalV2Value>(_column_raw_ptrs[i], value);
+                        no_error = decimalv2_pb_convert<int64_t, DecimalV2Value>(cur_column, value, slot->is_nullable());
                         break;                         
                     default:
-                        has_error = true;
+                        no_error = false;
                         unsupport_convertion = true;
                         break;
                     }
                     if (unsupport_convertion) {
                         error_msg << "Dont support " << field->type_name() << " to " << slot->type().debug_string() << " convert for protobuf data type. "
                                     << "The column is '" << slot->col_name() << ".";
-                    } else if (has_error) {
+                    } else if (!no_error) {
                         error_msg << "Value '" << std::to_string(value) << "' is out of range. "
                                     << "The type of '" << slot->col_name() << "' is " << slot->type().debug_string();
                     }
@@ -490,74 +512,74 @@ Status ProtobufScanner::_parse_protobuf(Chunk* chunk, std::shared_ptr<Sequential
                     switch (slot->type().type)
                     {
                     case LogicalType::TYPE_TINYINT:
-                        has_error = integer_to_integer_pb_convert<uint32_t, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<uint32_t, int8_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_UNSIGNED_TINYINT:
-                        has_error = integer_to_integer_pb_convert<uint32_t, uint8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<uint32_t, uint8_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_SMALLINT:
-                        has_error = integer_to_integer_pb_convert<uint32_t, int16_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<uint32_t, int16_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_UNSIGNED_SMALLINT:
-                        has_error = integer_to_integer_pb_convert<uint32_t, uint16_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<uint32_t, uint16_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_INT:
-                        has_error = integer_to_integer_pb_convert<uint32_t, int32_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<uint32_t, int32_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_UNSIGNED_INT:
-                        has_error = append_pb_convert<uint32_t, uint32_t>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<uint32_t, uint32_t>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_BIGINT:
-                        has_error = append_pb_convert<uint32_t, int64_t>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<uint32_t, int64_t>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_UNSIGNED_BIGINT:
-                        has_error = append_pb_convert<uint32_t, uint64_t>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<uint32_t, uint64_t>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_LARGEINT:
-                        has_error = append_pb_convert<uint32_t, int128_t>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<uint32_t, int128_t>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_FLOAT:
-                        has_error = append_pb_convert<uint32_t, float>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<uint32_t, float>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_DOUBLE:
-                        has_error = append_pb_convert<uint32_t, double>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<uint32_t, double>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_CHAR:
-                        has_error = integer_to_integer_pb_convert<uint32_t, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<uint32_t, int8_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_BOOLEAN:
-                        has_error = integer_to_integer_pb_convert<uint32_t, uint8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<uint32_t, uint8_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_DECIMAL32:
                         {
                             int64_t scale_value = value;
-                            has_error = decimalv3_pb_convert<int64_t, int32_t>(_column_raw_ptrs[i], scale_value, _strict_mode, slot->type().scale);
+                            no_error = decimalv3_pb_convert<int64_t, int32_t>(cur_column, scale_value, slot->is_nullable(), _strict_mode, slot->type().scale);
                         }
                         break;
                     case LogicalType::TYPE_DECIMAL64:
                         {
                             int64_t scale_value = value;
-                            has_error = decimalv3_pb_convert<int64_t, int64_t>(_column_raw_ptrs[i], scale_value, _strict_mode, slot->type().scale);
+                            no_error = decimalv3_pb_convert<int64_t, int64_t>(cur_column, scale_value, slot->is_nullable(), _strict_mode, slot->type().scale);
                         }
                         break;
                     case LogicalType::TYPE_DECIMAL128:
                         {
                             int64_t scale_value = value;
-                            has_error = decimalv3_pb_convert<int64_t, int128_t>(_column_raw_ptrs[i], scale_value, _strict_mode, slot->type().scale);
+                            no_error = decimalv3_pb_convert<int64_t, int128_t>(cur_column, scale_value, slot->is_nullable(), _strict_mode, slot->type().scale);
                         }
                         break;
                     case LogicalType::TYPE_DECIMALV2:
-                        has_error = decimalv2_pb_convert<uint32_t, DecimalV2Value>(_column_raw_ptrs[i], value);
+                        no_error = decimalv2_pb_convert<uint32_t, DecimalV2Value>(cur_column, value, slot->is_nullable());
                         break;                         
                     default:
-                        has_error = true;
+                        no_error = false;
                         unsupport_convertion = true;
                         break;
                     }
                     if (unsupport_convertion) {
                         error_msg << "Dont support " << field->type_name() << " to " << slot->type().debug_string() << " convert for protobuf data type. "
                                     << "The column is '" << slot->col_name() << ".";
-                    } else if (has_error) {
+                    } else if (!no_error) {
                         error_msg << "Value '" << std::to_string(value) << "' is out of range. "
                                     << "The type of '" << slot->col_name() << "' is " << slot->type().debug_string();
                     }
@@ -569,74 +591,74 @@ Status ProtobufScanner::_parse_protobuf(Chunk* chunk, std::shared_ptr<Sequential
                     switch (slot->type().type)
                     {
                     case LogicalType::TYPE_TINYINT:
-                        has_error = integer_to_integer_pb_convert<uint64_t, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<uint64_t, int8_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_UNSIGNED_TINYINT:
-                        has_error = integer_to_integer_pb_convert<uint64_t, uint8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<uint64_t, uint8_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_SMALLINT:
-                        has_error = integer_to_integer_pb_convert<uint64_t, int16_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<uint64_t, int16_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_UNSIGNED_SMALLINT:
-                        has_error = integer_to_integer_pb_convert<uint64_t, uint16_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<uint64_t, uint16_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_INT:
-                        has_error = integer_to_integer_pb_convert<uint64_t, int32_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<uint64_t, int32_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_UNSIGNED_INT:
-                        has_error = integer_to_integer_pb_convert<uint64_t, uint32_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<uint64_t, uint32_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_BIGINT:
-                        has_error = integer_to_integer_pb_convert<uint64_t, int64_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<uint64_t, int64_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_UNSIGNED_BIGINT:
-                        has_error = append_pb_convert<uint64_t, uint64_t>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<uint64_t, uint64_t>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_LARGEINT:
-                        has_error = append_pb_convert<uint64_t, int128_t>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<uint64_t, int128_t>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_FLOAT:
-                        has_error = append_pb_convert<uint64_t, float>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<uint64_t, float>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_DOUBLE:
-                        has_error = append_pb_convert<uint64_t, double>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<uint64_t, double>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_CHAR:
-                        has_error = integer_to_integer_pb_convert<uint64_t, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<uint64_t, int8_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_BOOLEAN:
-                        has_error = integer_to_integer_pb_convert<uint64_t, uint8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<uint64_t, uint8_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_DECIMAL32:
                         {
                             int128_t scale_value = value;
-                            has_error = decimalv3_pb_convert<int128_t, int32_t>(_column_raw_ptrs[i], scale_value, _strict_mode, slot->type().scale);
+                            no_error = decimalv3_pb_convert<int128_t, int32_t>(cur_column, scale_value, slot->is_nullable(), _strict_mode, slot->type().scale);
                         }
                         break;
                     case LogicalType::TYPE_DECIMAL64:
                         {
                             int128_t scale_value = value;
-                            has_error = decimalv3_pb_convert<int128_t, int64_t>(_column_raw_ptrs[i], scale_value, _strict_mode, slot->type().scale);
+                            no_error = decimalv3_pb_convert<int128_t, int64_t>(cur_column, scale_value, slot->is_nullable(), _strict_mode, slot->type().scale);
                         }
                         break;
                     case LogicalType::TYPE_DECIMAL128:
                         {
                             int128_t scale_value = value;
-                            has_error = decimalv3_pb_convert<int128_t, int128_t>(_column_raw_ptrs[i], scale_value, _strict_mode, slot->type().scale);
+                            no_error = decimalv3_pb_convert<int128_t, int128_t>(cur_column, scale_value, slot->is_nullable(), _strict_mode, slot->type().scale);
                         }
                         break;
                     case LogicalType::TYPE_DECIMALV2:
-                        has_error = decimalv2_pb_convert<uint64_t, DecimalV2Value>(_column_raw_ptrs[i], value);
+                        no_error = decimalv2_pb_convert<uint64_t, DecimalV2Value>(cur_column, value, slot->is_nullable());
                         break;                         
                     default:
-                        has_error = true;
+                        no_error = false;
                         unsupport_convertion = true;
                         break;
                     }
                     if (unsupport_convertion) {
                         error_msg << "Dont support " << field->type_name() << " to " << slot->type().debug_string() << " convert for protobuf data type. "
                                     << "The column is '" << slot->col_name() << ".";
-                    } else if (has_error) {
+                    } else if (!no_error) {
                         error_msg << "Value '" << std::to_string(value) << "' is out of range. "
                                     << "The type of '" << slot->col_name() << "' is " << slot->type().debug_string();
                     }                
@@ -648,68 +670,68 @@ Status ProtobufScanner::_parse_protobuf(Chunk* chunk, std::shared_ptr<Sequential
                     switch (slot->type().type)
                     {
                     case LogicalType::TYPE_TINYINT:
-                        has_error = float_to_integer_pb_convert<double, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = float_to_integer_pb_convert<double, int8_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_UNSIGNED_TINYINT:
-                        has_error = float_to_integer_pb_convert<double, uint8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = float_to_integer_pb_convert<double, uint8_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_SMALLINT:
-                        has_error = float_to_integer_pb_convert<double, int16_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = float_to_integer_pb_convert<double, int16_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_UNSIGNED_SMALLINT:
-                        has_error = float_to_integer_pb_convert<double, uint16_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = float_to_integer_pb_convert<double, uint16_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_INT:
-                        has_error = float_to_integer_pb_convert<double, int32_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = float_to_integer_pb_convert<double, int32_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_UNSIGNED_INT:
-                        has_error = float_to_integer_pb_convert<double, uint32_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = float_to_integer_pb_convert<double, uint32_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_BIGINT:
-                        has_error = float_to_integer_pb_convert<double, int64_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = float_to_integer_pb_convert<double, int64_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_UNSIGNED_BIGINT:
-                        has_error = float_to_integer_pb_convert<double, uint64_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = float_to_integer_pb_convert<double, uint64_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_LARGEINT:
-                        has_error = float_to_integer_pb_convert<double, int128_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = float_to_integer_pb_convert<double, int128_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_FLOAT:
-                        has_error = append_pb_convert<double, float>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<double, float>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_DOUBLE:
-                        has_error = append_pb_convert<double, double>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<double, double>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_CHAR:
-                        has_error = float_to_integer_pb_convert<double, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = float_to_integer_pb_convert<double, int8_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_BOOLEAN:
-                        has_error = float_to_integer_pb_convert<double, uint8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = float_to_integer_pb_convert<double, uint8_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_DECIMAL32:
                         // TODO: decimal_scale 
-                        has_error = decimalv3_float_double_pb_convert<double, int32_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        no_error = decimalv3_float_double_pb_convert<double, int32_t>(cur_column, value, slot->is_nullable(), _strict_mode, slot->type().scale);
                         break;
                     case LogicalType::TYPE_DECIMAL64:
                         // TODO: decimal_scale 
-                        has_error = decimalv3_float_double_pb_convert<double, int64_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        no_error = decimalv3_float_double_pb_convert<double, int64_t>(cur_column, value, slot->is_nullable(), _strict_mode, slot->type().scale);
                         break;
                     case LogicalType::TYPE_DECIMAL128:
                         // TODO: decimal_scale 
-                        has_error = decimalv3_float_double_pb_convert<double, int128_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        no_error = decimalv3_float_double_pb_convert<double, int128_t>(cur_column, value, slot->is_nullable(), _strict_mode, slot->type().scale);
                         break;
                     case LogicalType::TYPE_DECIMALV2:
-                        has_error = decimalv2_pb_convert<double, DecimalV2Value>(_column_raw_ptrs[i], value);
+                        no_error = decimalv2_pb_convert<double, DecimalV2Value>(cur_column, value, slot->is_nullable());
                         break;                         
                     default:
-                        has_error = true;
+                        no_error = false;
                         unsupport_convertion = true;
                         break;
                     }
                     if (unsupport_convertion) {
                         error_msg << "Dont support " << field->type_name() << " to " << slot->type().debug_string() << " convert for protobuf data type. "
                                     << "The column is '" << slot->col_name() << ".";
-                    } else if (has_error) {
+                    } else if (!no_error) {
                         error_msg << "Value '" << std::to_string(value) << "' is out of range. "
                                     << "The type of '" << slot->col_name() << "' is " << slot->type().debug_string();
                     }                     
@@ -721,68 +743,68 @@ Status ProtobufScanner::_parse_protobuf(Chunk* chunk, std::shared_ptr<Sequential
                     switch (slot->type().type)
                     {
                     case LogicalType::TYPE_TINYINT:
-                        has_error = float_to_integer_pb_convert<float, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = float_to_integer_pb_convert<float, int8_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_UNSIGNED_TINYINT:
-                        has_error = float_to_integer_pb_convert<float, uint8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = float_to_integer_pb_convert<float, uint8_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_SMALLINT:
-                        has_error = float_to_integer_pb_convert<float, int16_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = float_to_integer_pb_convert<float, int16_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_UNSIGNED_SMALLINT:
-                        has_error = float_to_integer_pb_convert<float, uint16_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = float_to_integer_pb_convert<float, uint16_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_INT:
-                        has_error = float_to_integer_pb_convert<float, int32_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = float_to_integer_pb_convert<float, int32_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_UNSIGNED_INT:
-                        has_error = float_to_integer_pb_convert<float, uint32_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = float_to_integer_pb_convert<float, uint32_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_BIGINT:
-                        has_error = float_to_integer_pb_convert<float, int64_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = float_to_integer_pb_convert<float, int64_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_UNSIGNED_BIGINT:
-                        has_error = float_to_integer_pb_convert<float, uint64_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = float_to_integer_pb_convert<float, uint64_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_LARGEINT:
-                        has_error = float_to_integer_pb_convert<float, int128_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = float_to_integer_pb_convert<float, int128_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_FLOAT:
-                        has_error = append_pb_convert<float, float>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<float, float>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_DOUBLE:
-                        has_error = append_pb_convert<float, double>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<float, double>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_CHAR:
-                        has_error = float_to_integer_pb_convert<float, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = float_to_integer_pb_convert<float, int8_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_BOOLEAN:
-                        has_error = float_to_integer_pb_convert<float, uint8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = float_to_integer_pb_convert<float, uint8_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_DECIMAL32:
                         // TODO: decimal_scale 
-                        has_error = decimalv3_float_double_pb_convert<float, int32_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        no_error = decimalv3_float_double_pb_convert<float, int32_t>(cur_column, value, slot->is_nullable(), _strict_mode, slot->type().scale);
                         break;
                     case LogicalType::TYPE_DECIMAL64:
                         // TODO: decimal_scale 
-                        has_error = decimalv3_float_double_pb_convert<float, int64_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        no_error = decimalv3_float_double_pb_convert<float, int64_t>(cur_column, value, slot->is_nullable(), _strict_mode, slot->type().scale);
                         break;
                     case LogicalType::TYPE_DECIMAL128:
                         // TODO: decimal_scale 
-                        has_error = decimalv3_float_double_pb_convert<float, int128_t>(_column_raw_ptrs[i], value, _strict_mode, slot->type().scale);
+                        no_error = decimalv3_float_double_pb_convert<float, int128_t>(cur_column, value, slot->is_nullable(), _strict_mode, slot->type().scale);
                         break;
                     case LogicalType::TYPE_DECIMALV2:
-                        has_error = decimalv2_pb_convert<float, DecimalV2Value>(_column_raw_ptrs[i], value);
+                        no_error = decimalv2_pb_convert<float, DecimalV2Value>(cur_column, value, slot->is_nullable());
                         break;                         
                     default:
-                        has_error = true;
+                        no_error = false;
                         unsupport_convertion = true;
                         break;
                     }
                     if (unsupport_convertion) {
                         error_msg << "Dont support " << field->type_name() << " to " << slot->type().debug_string() << " convert for protobuf data type. "
                                     << "The column is '" << slot->col_name() << ".";
-                    } else if (has_error) {
+                    } else if (!no_error) {
                         error_msg << "Value '" << std::to_string(value) << "' is out of range. "
                                     << "The type of '" << slot->col_name() << "' is " << slot->type().debug_string();
                     }               
@@ -794,74 +816,74 @@ Status ProtobufScanner::_parse_protobuf(Chunk* chunk, std::shared_ptr<Sequential
                     switch (slot->type().type)
                     {
                     case LogicalType::TYPE_TINYINT:
-                        has_error = integer_to_integer_pb_convert<uint8_t, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<uint8_t, int8_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_UNSIGNED_TINYINT:
-                        has_error = append_pb_convert<uint8_t, uint8_t>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<uint8_t, uint8_t>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_SMALLINT:
-                        has_error = append_pb_convert<uint8_t, int16_t>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<uint8_t, int16_t>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_UNSIGNED_SMALLINT:
-                        has_error = append_pb_convert<uint8_t, uint16_t>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<uint8_t, uint16_t>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_INT:
-                        has_error = append_pb_convert<uint8_t, int32_t>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<uint8_t, int32_t>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_UNSIGNED_INT:
-                        has_error = append_pb_convert<uint8_t, uint32_t>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<uint8_t, uint32_t>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_BIGINT:
-                        has_error = append_pb_convert<uint8_t, int64_t>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<uint8_t, int64_t>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_UNSIGNED_BIGINT:
-                        has_error = append_pb_convert<uint8_t, uint64_t>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<uint8_t, uint64_t>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_LARGEINT:
-                        has_error = append_pb_convert<uint8_t, int128_t>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<uint8_t, int128_t>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_FLOAT:
-                        has_error = append_pb_convert<uint8_t, float>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<uint8_t, float>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_DOUBLE:
-                        has_error = append_pb_convert<uint8_t, double>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<uint8_t, double>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_CHAR:
-                        has_error = integer_to_integer_pb_convert<uint8_t, int8_t>(_column_raw_ptrs[i], value, _strict_mode);
+                        no_error = integer_to_integer_pb_convert<uint8_t, int8_t>(cur_column, value, slot->is_nullable(), _strict_mode);
                         break;
                     case LogicalType::TYPE_BOOLEAN:
-                        has_error = append_pb_convert<uint8_t, uint8_t>(_column_raw_ptrs[i], value);
+                        no_error = append_pb_convert<uint8_t, uint8_t>(cur_column, value, slot->is_nullable());
                         break;
                     case LogicalType::TYPE_DECIMAL32:
                         {
                             int32_t scale_value = value;
-                            has_error = decimalv3_pb_convert<int32_t, int32_t>(_column_raw_ptrs[i], scale_value, _strict_mode, slot->type().scale);
+                            no_error = decimalv3_pb_convert<int32_t, int32_t>(cur_column, scale_value, slot->is_nullable(), _strict_mode, slot->type().scale);
                         }
                         break;
                     case LogicalType::TYPE_DECIMAL64:
                         {
                             int32_t scale_value = value;
-                            has_error = decimalv3_pb_convert<int32_t, int64_t>(_column_raw_ptrs[i], scale_value, _strict_mode, slot->type().scale);
+                            no_error = decimalv3_pb_convert<int32_t, int64_t>(cur_column, scale_value, slot->is_nullable(), _strict_mode, slot->type().scale);
                         }
                         break;
                     case LogicalType::TYPE_DECIMAL128:
                         {
                             int32_t scale_value = value;
-                            has_error = decimalv3_pb_convert<int32_t, int128_t>(_column_raw_ptrs[i], scale_value, _strict_mode, slot->type().scale);
+                            no_error = decimalv3_pb_convert<int32_t, int128_t>(cur_column, scale_value, slot->is_nullable(), _strict_mode, slot->type().scale);
                         }
                         break;
                     case LogicalType::TYPE_DECIMALV2:
-                        has_error = decimalv2_pb_convert<uint8_t, DecimalV2Value>(_column_raw_ptrs[i], value);
+                        no_error = decimalv2_pb_convert<uint8_t, DecimalV2Value>(cur_column, value, slot->is_nullable());
                         break;                         
                     default:
-                        has_error = true;
+                        no_error = false;
                         unsupport_convertion = true;
                         break;
                     }
                     if (unsupport_convertion) {
                         error_msg << "Dont support " << field->type_name() << " to " << slot->type().debug_string() << " convert for protobuf data type. "
                                     << "The column is '" << slot->col_name() << ".";
-                    } else if (has_error) {
+                    } else if (!no_error) {
                         error_msg << "Value '" << std::to_string(value) << "' is out of range. "
                                     << "The type of '" << slot->col_name() << "' is " << slot->type().debug_string();
                     }                
@@ -872,14 +894,14 @@ Status ProtobufScanner::_parse_protobuf(Chunk* chunk, std::shared_ptr<Sequential
                     const PBEnumValueDescriptor* num_descriptor = reflection->GetEnum(*mutable_msg, field);
                     std::string value = num_descriptor->name();
                     if (slot->type().type != LogicalType::TYPE_VARCHAR) {
-                        has_error = true;
+                        no_error = false;
                         unsupport_convertion = true;
                         error_msg << "Dont support " << field->type_name() << " to " << slot->type().debug_string() << " convert for protobuf data type. "
                                     << "The column is '" << slot->col_name() << ".";
                         break;
                     }
-                    has_error = string_pb_convert(_column_raw_ptrs[i], value, _strict_mode, &slot->type());
-                    if (has_error) {
+                    no_error = string_pb_convert(cur_column, value, slot->is_nullable(), _strict_mode, &slot->type());
+                    if (!no_error) {
                         error_msg << "Value '" << value << "' is out of range. "
                                     << "The type of '" << slot->col_name() << "' is " << slot->type().debug_string();
                     }               
@@ -889,29 +911,29 @@ Status ProtobufScanner::_parse_protobuf(Chunk* chunk, std::shared_ptr<Sequential
                 {
                     std::string value = reflection->GetString(*mutable_msg, field);
                     if (slot->type().type != LogicalType::TYPE_VARCHAR) {
-                        has_error = true;
+                        no_error = false;
                         unsupport_convertion = true;
                         error_msg << "Dont support " << field->type_name() << " to " << slot->type().debug_string() << " convert for protobuf data type. "
                                     << "The column is '" << slot->col_name() << ".";
                         break;
                     }
-                    has_error = string_pb_convert(_column_raw_ptrs[i], value, _strict_mode, &slot->type());
-                    if (has_error) {
+                    no_error = string_pb_convert(cur_column, value, slot->is_nullable(), _strict_mode, &slot->type());
+                    if (!no_error) {
                         error_msg << "Value '" << value << "' is out of range. "
                                     << "The type of '" << slot->col_name() << "' is " << slot->type().debug_string();
                     }           
                 }
                 break;
             case PBFieldDescriptor::CppType::CPPTYPE_MESSAGE:
-                has_error = true;
+                no_error = false;
                 error_msg << "Dont support Message type for protobuf data type.";
                 break;
             default:
-                has_error = true;
+                no_error = false;
                 error_msg << "Unknown protobuf data type.";
                 break;
             }
-            if (has_error) {
+            if (!no_error) {
                 chunk->set_num_rows(num_rows);
                 if (_counter->num_rows_filtered++ < 50) {
                     _report_error(record.to_string(), error_msg.str());
@@ -919,7 +941,7 @@ Status ProtobufScanner::_parse_protobuf(Chunk* chunk, std::shared_ptr<Sequential
                 break;
             }
         } // end of for
-        num_rows += !has_error;
+        num_rows += no_error;
     }
     return Status::OK();
 }
@@ -944,7 +966,11 @@ StatusOr<ChunkPtr> ProtobufScanner::get_next() {
     src_chunk->set_num_rows(0);
     st = _parse_protobuf(src_chunk.get(), file);
     if (!st.ok()) {
-        return st;
+        if (st.is_end_of_file()) {
+            // do nothing
+        } else if (!st.is_time_out()) {
+            return st;
+        }
     }
     return materialize(nullptr, src_chunk);
 }
