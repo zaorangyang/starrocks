@@ -44,13 +44,14 @@ const int64_t MAX_ERROR_LINES_IN_FILE = 50;
 const int64_t MAX_ERROR_LOG_LENGTH = 64;
 
 JsonScanner::JsonScanner(RuntimeState* state, RuntimeProfile* profile, const TBrokerScanRange& scan_range,
-                         ScannerCounter* counter)
+                         ScannerCounter* counter, BenchData* bench_data)
         : FileScanner(state, profile, scan_range.params, counter),
           _scan_range(scan_range),
           _next_range(0),
           _max_chunk_size(state->chunk_size()),
           _cur_file_reader(nullptr),
-          _cur_file_eof(true) {}
+          _cur_file_eof(true),
+          _bench_data(bench_data) {}
 
 JsonScanner::~JsonScanner() = default;
 
@@ -307,7 +308,7 @@ Status JsonScanner::_open_next_reader() {
         LOG(WARNING) << "Failed to create sequential files: " << st.to_string();
         return st;
     }
-    _cur_file_reader = std::make_unique<JsonReader>(_state, _counter, this, file, _strict_mode, _src_slot_descriptors);
+    _cur_file_reader = std::make_unique<JsonReader>(_state, _counter, this, file, _strict_mode, _src_slot_descriptors, _bench_data);
     RETURN_IF_ERROR(_cur_file_reader->open());
     _next_range++;
     return Status::OK();
@@ -333,14 +334,15 @@ StatusOr<ChunkPtr> JsonScanner::_cast_chunk(const starrocks::ChunkPtr& src_chunk
 }
 
 JsonReader::JsonReader(starrocks::RuntimeState* state, starrocks::ScannerCounter* counter, JsonScanner* scanner,
-                       std::shared_ptr<SequentialFile> file, bool strict_mode, std::vector<SlotDescriptor*> slot_descs)
+                       std::shared_ptr<SequentialFile> file, bool strict_mode, std::vector<SlotDescriptor*> slot_descs, BenchData* bench_data)
         : _state(state),
           _counter(counter),
           _scanner(scanner),
           _strict_mode(strict_mode),
           _file(std::move(file)),
           _slot_descs(std::move(slot_descs)),
-          _op_col_index(-1) {
+          _op_col_index(-1),
+          _bench_data(bench_data) {
 #if BE_TEST
     raw::RawVector<char> buf(_buf_size);
     std::swap(buf, _buf);
@@ -682,38 +684,12 @@ Status JsonReader::_read_and_parse_json() {
     uint8_t* data{};
     size_t length = 0;
 
-#ifdef BE_TEST
-
-    [[maybe_unused]] size_t message_size = 0;
-    ASSIGN_OR_RETURN(auto nread, _file->read(_buf.data(), _buf_size));
-    if (nread == 0) {
-        return Status::EndOfFile("EOF of reading file");
+    auto row = _bench_data->get_next_row();
+    if (!row.status().ok()) {
+        return row.status();
     }
-
-    data = reinterpret_cast<uint8_t*>(_buf.data());
-    length = nread;
-
-#else
-    // TODO: Remove the down_cast, should not rely on the specific implementation.
-    auto* stream_file = down_cast<StreamLoadPipeInputStream*>(_file->stream().get());
-    {
-        SCOPED_RAW_TIMER(&_counter->file_read_ns);
-        ASSIGN_OR_RETURN(_parser_buf, stream_file->pipe()->read());
-
-        if (_parser_buf->capacity < _parser_buf->remaining() + simdjson::SIMDJSON_PADDING) {
-            // For efficiency reasons, simdjson requires a string with a few bytes (simdjson::SIMDJSON_PADDING) at the end.
-            // Hence, a re-allocation is needed if the space is not enough.
-            auto buf = ByteBuffer::allocate(_parser_buf->remaining() + simdjson::SIMDJSON_PADDING);
-            buf->put_bytes(_parser_buf->ptr, _parser_buf->remaining());
-            buf->flip();
-            std::swap(buf, _parser_buf);
-        }
-    }
-
-    data = reinterpret_cast<uint8_t*>(_parser_buf->ptr);
-    length = _parser_buf->remaining();
-
-#endif
+    data = row.value().first;
+    length = row.value().second;
 
     // Check the content formart accroding to the first non-space character.
     // Treat json string started with '{' as ndjson.

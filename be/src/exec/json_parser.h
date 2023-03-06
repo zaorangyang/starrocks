@@ -20,6 +20,7 @@
 #include "simdjson.h"
 
 namespace starrocks {
+class BenchData;
 
 class JsonParser {
 public:

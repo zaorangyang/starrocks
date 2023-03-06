@@ -31,10 +31,34 @@ namespace starrocks {
 struct SimpleJsonPath;
 class JsonReader;
 class JsonParser;
+
+class BenchData {
+public:
+    StatusOr<std::pair<uint8_t*, size_t>> get_next_row() {
+        if (_cur_row >= _rows.size()) {
+            return Status::EndOfFile("no rows in buffer");
+        } else {
+            return _rows[_cur_row++];
+        }
+    }
+
+    void put_row(uint8_t* data, size_t length) {
+        _rows.emplace_back(data, length);
+    }
+
+    int64_t get_rows() {
+        return _rows.size();
+    }
+
+private:
+    std::vector<std::pair<uint8_t*, size_t>> _rows;
+    int64_t _cur_row = 0;
+};
+
 class JsonScanner : public FileScanner {
 public:
     JsonScanner(RuntimeState* state, RuntimeProfile* profile, const TBrokerScanRange& scan_range,
-                ScannerCounter* counter);
+                ScannerCounter* counter, BenchData* bench_data = nullptr);
     ~JsonScanner() override;
 
     // Open this scanner, will initialize information needed
@@ -63,6 +87,7 @@ private:
     // used to hold current StreamLoadPipe
     std::unique_ptr<JsonReader> _cur_file_reader;
     bool _cur_file_eof; // indicate the current file is eof
+    BenchData* _bench_data;
 
     std::vector<std::shared_ptr<SequentialFile>> _files;
 
@@ -82,7 +107,7 @@ private:
 class JsonReader {
 public:
     JsonReader(RuntimeState* state, ScannerCounter* counter, JsonScanner* scanner, std::shared_ptr<SequentialFile> file,
-               bool strict_mode, std::vector<SlotDescriptor*> slot_descs);
+               bool strict_mode, std::vector<SlotDescriptor*> slot_descs, BenchData* bench_data = nullptr);
 
     ~JsonReader();
 
@@ -144,6 +169,7 @@ private:
     std::vector<uint8_t> _parsed_columns;
     // record the "__op" column's index
     int _op_col_index;
+    BenchData* _bench_data;
 
     // only used in unit test.
     // TODO: The semantics of Streaming Load And Routine Load is non-consistent.
