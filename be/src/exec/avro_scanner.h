@@ -60,6 +60,9 @@ public:
     static std::string preprocess_jsonpaths(std::string jsonpath);
 
 private:
+    Status _construct_avro_types();
+    Status _construct_cast_exprs();
+    StatusOr<ChunkPtr> _cast_chunk(const starrocks::ChunkPtr& src_chunk);
     Status _create_src_chunk(ChunkPtr* chunk);
     Status _parse_avro(Chunk* chunk, std::shared_ptr<SequentialFile> file);
     void _report_error(const std::string& line, const std::string& err_msg);
@@ -79,6 +82,9 @@ private:
     std::vector<Column*> _column_raw_ptrs;
     ByteBufferPtr _parser_buf;
     std::vector<std::vector<AvroPath>> _json_paths;
+    std::vector<TypeDescriptor> _avro_types;
+    std::vector<Expr*> _cast_exprs;
+    ObjectPool _pool;
 
 #if BE_TEST
     avro_file_reader_t _dbreader;

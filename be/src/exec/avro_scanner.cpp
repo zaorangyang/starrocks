@@ -163,6 +163,8 @@ Status AvroScanner::open() {
 #endif
 
     RETURN_IF_ERROR(FileScanner::open());
+    RETURN_IF_ERROR(_construct_avro_types());
+    RETURN_IF_ERROR(_construct_cast_exprs());
     if (_scan_range.ranges.empty()) {
         return Status::OK();
     }
@@ -219,7 +221,7 @@ Status AvroScanner::_create_src_chunk(ChunkPtr* chunk) {
         if (slot_desc == nullptr) {
             continue;
         }
-        auto column = ColumnHelper::create_column(slot_desc->type(), true, false, 0, true);
+        auto column = ColumnHelper::create_column(_avro_types[column_pos], true, false, 0, true);
         (*chunk)->append_column(column, slot_desc->id());
     }
 
@@ -307,11 +309,26 @@ Status AvroScanner::_parse_avro(Chunk* chunk, std::shared_ptr<SequentialFile> fi
         serdes_schema_t* schema;
         serdes_err_t err = serdes_deserialize_avro(_serdes, &avro_value, &schema, data, length, _err_buf, sizeof(_err_buf));
         if (err) {
-            LOG(ERROR) << "serdes deserialize avro failed: " << _err_buf;
+            auto err_msg = "serdes deserialize avro failed: " + std::string(_err_buf);
+            LOG(ERROR) << err_msg;
+            _counter->num_rows_filtered++;
+            _state->append_error_msg_to_file("",err_msg);
             return Status::InternalError("serdes deserialize avro failed");
         }
 #endif
-        RETURN_IF_ERROR(_construct_row(avro_value, chunk));
+        size_t chunk_row_num = chunk->num_rows();
+        auto st = _construct_row(avro_value, chunk);
+        if (!st.ok()) {
+            if (_counter->num_rows_filtered++ < MAX_ERROR_LINES_IN_FILE) {
+                // We would continue to construct row even if error is returned,
+                // hence the number of error appended to the file should be limited.
+                _state->append_error_msg_to_file("", st.to_string());
+                LOG(WARNING) << "failed to construct row: " << st;
+            }
+            // Before continuing to process other rows, we need to first clean the fail parsed row.
+            chunk->set_num_rows(chunk_row_num);
+            return st;
+        }
     }
     return Status::OK();
 }
@@ -337,12 +354,160 @@ StatusOr<ChunkPtr> AvroScanner::get_next() {
     src_chunk->set_num_rows(0);
     st = _parse_avro(src_chunk.get(), file);
     if (!st.ok()) {
-        if (!st.is_end_of_file()) {
+        if (!st.is_time_out() && !st.is_end_of_file()) {
+            return st;
+        }
+    }
+    if (src_chunk->num_rows() == 0) {
+        if (st.is_end_of_file()) {
+            return Status::EndOfFile("EOF of reading avro file, nothing read");
+        } else if (st.is_time_out()) {
+            // if timeout happens at the beginning of reading src_chunk, we return the error state
+            // else we will _materialize the lines read before timeout and return ok()
             return st;
         }
     }
     _materialize_src_chunk_adaptive_nullable_column(src_chunk);
-    return materialize(nullptr, src_chunk);
+    ASSIGN_OR_RETURN(auto cast_chunk, _cast_chunk(src_chunk));
+    return materialize(src_chunk, cast_chunk);
+}
+
+StatusOr<ChunkPtr> AvroScanner::_cast_chunk(const starrocks::ChunkPtr& src_chunk) {
+    SCOPED_RAW_TIMER(&_counter->cast_chunk_ns);
+    ChunkPtr cast_chunk = std::make_shared<Chunk>();
+
+    size_t slot_size = _src_slot_descriptors.size();
+    for (int column_pos = 0; column_pos < slot_size; ++column_pos) {
+        auto slot = _src_slot_descriptors[column_pos];
+        if (slot == nullptr) {
+            continue;
+        }
+
+        ASSIGN_OR_RETURN(ColumnPtr col, _cast_exprs[column_pos]->evaluate_checked(nullptr, src_chunk.get()));
+        col = ColumnHelper::unfold_const_column(slot->type(), src_chunk->num_rows(), col);
+        cast_chunk->append_column(std::move(col), slot->id());
+    }
+
+    return cast_chunk;
+}
+
+Status AvroScanner::_construct_cast_exprs() {
+    size_t slot_size = _src_slot_descriptors.size();
+    _cast_exprs.resize(slot_size);
+    for (int column_pos = 0; column_pos < slot_size; ++column_pos) {
+        auto slot_desc = _src_slot_descriptors[column_pos];
+        if (slot_desc == nullptr) {
+            continue;
+        }
+
+        auto& from_type = _avro_types[column_pos];
+        auto& to_type = slot_desc->type();
+        Expr* slot = _pool.add(new ColumnRef(slot_desc));
+
+        if (to_type.is_assignable(from_type)) {
+            _cast_exprs[column_pos] = slot;
+            continue;
+        }
+
+        VLOG(3) << strings::Substitute("The field name($0) cast STARROCKS($1) to STARROCKS($2).", slot_desc->col_name(),
+                                       from_type.debug_string(), to_type.debug_string());
+
+        Expr* cast = VectorizedCastExprFactory::from_type(from_type, to_type, slot, &_pool);
+
+        if (cast == nullptr) {
+            return Status::InternalError(strings::Substitute("Not support cast $0 to $1.", from_type.debug_string(),
+                                                             to_type.debug_string()));
+        }
+
+        _cast_exprs[column_pos] = cast;
+    }
+
+    return Status::OK();
+}
+
+Status AvroScanner::_construct_avro_types() {
+    size_t slot_size = _src_slot_descriptors.size();
+    _avro_types.resize(slot_size);
+    for (int column_pos = 0; column_pos < slot_size; ++column_pos) {
+        auto slot_desc = _src_slot_descriptors[column_pos];
+        if (slot_desc == nullptr) {
+            continue;
+        }
+
+        switch (slot_desc->type().type) {
+        case TYPE_ARRAY: {
+            TypeDescriptor json_type(TYPE_ARRAY);
+            TypeDescriptor* child_type = &json_type;
+
+            const TypeDescriptor* slot_type = &(slot_desc->type().children[0]);
+            while (slot_type->type == TYPE_ARRAY) {
+                slot_type = &(slot_type->children[0]);
+
+                child_type->children.emplace_back(TYPE_ARRAY);
+                child_type = &(child_type->children[0]);
+            }
+
+            // the json lib don't support get_int128_t(), so we load with BinaryColumn and then convert to LargeIntColumn
+            if (slot_type->type == TYPE_FLOAT || slot_type->type == TYPE_DOUBLE || slot_type->type == TYPE_BIGINT ||
+                slot_type->type == TYPE_INT || slot_type->type == TYPE_SMALLINT || slot_type->type == TYPE_TINYINT) {
+                // Treat these types as what they are.
+                child_type->children.emplace_back(slot_type->type);
+            } else if (slot_type->type == TYPE_VARCHAR) {
+                auto varchar_type = TypeDescriptor::create_varchar_type(slot_type->len);
+                child_type->children.emplace_back(varchar_type);
+            } else if (slot_type->type == TYPE_CHAR) {
+                auto char_type = TypeDescriptor::create_char_type(slot_type->len);
+                child_type->children.emplace_back(char_type);
+            } else if (slot_type->type == TYPE_JSON) {
+                child_type->children.emplace_back(TypeDescriptor::create_json_type());
+            } else {
+                // Treat other types as VARCHAR.
+                auto varchar_type = TypeDescriptor::create_varchar_type(TypeDescriptor::MAX_VARCHAR_LENGTH);
+                child_type->children.emplace_back(varchar_type);
+            }
+
+            _avro_types[column_pos] = std::move(json_type);
+            break;
+        }
+
+        // Treat these types as what they are.
+        case TYPE_FLOAT:
+        case TYPE_DOUBLE:
+        case TYPE_BIGINT:
+        case TYPE_INT:
+        case TYPE_BOOLEAN:
+        case TYPE_SMALLINT:
+        case TYPE_TINYINT: {
+            _avro_types[column_pos] = TypeDescriptor{slot_desc->type().type};
+            break;
+        }
+
+        case TYPE_CHAR: {
+            auto char_type = TypeDescriptor::create_char_type(slot_desc->type().len);
+            _avro_types[column_pos] = std::move(char_type);
+            break;
+        }
+
+        case TYPE_VARCHAR: {
+            auto varchar_type = TypeDescriptor::create_varchar_type(slot_desc->type().len);
+            _avro_types[column_pos] = std::move(varchar_type);
+            break;
+        }
+
+        case TYPE_JSON: {
+            _avro_types[column_pos] = TypeDescriptor::create_json_type();
+            break;
+        }
+
+        // Treat other types as VARCHAR.
+        default: {
+            auto varchar_type = TypeDescriptor::create_varchar_type(TypeDescriptor::MAX_VARCHAR_LENGTH);
+            _avro_types[column_pos] = std::move(varchar_type);
+            break;
+        }
+        }
+    }
+    return Status::OK();
 }
 
 void AvroScanner::close() {
