@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "exec/avro_scanner.h"
+
 #include <gtest/gtest.h>
 
 #include <fstream>
@@ -21,16 +23,15 @@
 
 #include "column/chunk.h"
 #include "column/datum_tuple.h"
-#include "exec/avro_scanner.h"
 #include "fs/fs_util.h"
 #include "gen_cpp/Descriptors_types.h"
+#include "gutil/strings/substitute.h"
 #include "runtime/descriptor_helper.h"
 #include "runtime/descriptors.h"
 #include "runtime/runtime_state.h"
 #include "testutil/assert.h"
 #include "testutil/parallel_test.h"
 #include "util/defer_op.h"
-#include "gutil/strings/substitute.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -137,12 +138,14 @@ protected:
         avro_file_writer_t db;
         int rval = avro_file_writer_create(data_path.c_str(), avro_helper.schema, &db);
         if (rval) {
-            auto err_msg = strings::Substitute("There was an error creating $0 error message: $1", data_path, avro_strerror());
+            auto err_msg =
+                    strings::Substitute("There was an error creating $0 error message: $1", data_path, avro_strerror());
             return Status::InternalError(err_msg);
         }
 
         if (avro_file_writer_append_value(db, &avro_helper.avro_val)) {
-            auto err_msg = strings::Substitute("Unable to write Person value to memory buffer\nMessage: $0", avro_strerror());
+            auto err_msg =
+                    strings::Substitute("Unable to write Person value to memory buffer\nMessage: $0", avro_strerror());
             return Status::InternalError(err_msg);
         }
         avro_file_writer_flush(db);
@@ -207,8 +210,9 @@ TEST_F(AvroScannerTest, test_basic_type) {
     range.__set_path(data_path);
     ranges.emplace_back(range);
 
-    auto scanner = create_avro_scanner(types, ranges,
-                                       {"booleantype", "longtype", "doubletype", "stringtype", "enumtype"}, avro_helper.schema_text);
+    auto scanner =
+            create_avro_scanner(types, ranges, {"booleantype", "longtype", "doubletype", "stringtype", "enumtype"},
+                                avro_helper.schema_text);
 
     Status st = scanner->open();
     ASSERT_TRUE(st.ok());
@@ -227,9 +231,12 @@ TEST_F(AvroScannerTest, test_basic_type) {
 }
 
 TEST_F(AvroScannerTest, test_preprocess_jsonpaths) {
-    std::string jsonpaths = R"(["$.decoded_logs.id", "$.decoded_logs.event_signature.*", "$.decoded_logs.event_params.*", "$.decoded_logs.raw_log.*.data"])";
+    std::string jsonpaths =
+            R"(["$.decoded_logs.id", "$.decoded_logs.event_signature.*", "$.decoded_logs.event_params.*", "$.decoded_logs.raw_log.*.data"])";
     std::string new_jsonpaths = AvroScanner::preprocess_jsonpaths(jsonpaths);
-    EXPECT_EQ(R"(["$.decoded_logs.id", "$.decoded_logs.event_signature", "$.decoded_logs.event_params", "$.decoded_logs.raw_log.data"])", new_jsonpaths);
+    EXPECT_EQ(
+            R"(["$.decoded_logs.id", "$.decoded_logs.event_signature", "$.decoded_logs.event_params", "$.decoded_logs.raw_log.data"])",
+            new_jsonpaths);
 }
 
 TEST_F(AvroScannerTest, test_generate_jsonpaths) {
@@ -304,8 +311,9 @@ TEST_F(AvroScannerTest, test_jsonpaths) {
     range.__set_path(data_path);
     ranges.emplace_back(range);
 
-    auto scanner = create_avro_scanner(types, ranges,
-                                       {"booleantype", "longtype", "doubletype", "stringtype", "longtype2"}, avro_helper.schema_text);
+    auto scanner =
+            create_avro_scanner(types, ranges, {"booleantype", "longtype", "doubletype", "stringtype", "longtype2"},
+                                avro_helper.schema_text);
     Status st = scanner->open();
     ASSERT_TRUE(st.ok());
 
@@ -384,8 +392,9 @@ TEST_F(AvroScannerTest, test_json_type) {
     range.__set_path(data_path);
     ranges.emplace_back(range);
 
-    auto scanner = create_avro_scanner(types, ranges,
-                                       {"booleantype", "longtype", "doubletype", "stringtype", "nesttype"}, avro_helper.schema_text);
+    auto scanner =
+            create_avro_scanner(types, ranges, {"booleantype", "longtype", "doubletype", "stringtype", "nesttype"},
+                                avro_helper.schema_text);
     Status st = scanner->open();
     ASSERT_TRUE(st.ok());
 
@@ -454,7 +463,8 @@ TEST_F(AvroScannerTest, test_union_type_null) {
     range.__set_path(data_path);
     ranges.emplace_back(range);
 
-    auto scanner = create_avro_scanner(types, ranges, {"booleantype", "longtype", "doubletype", "uniontype"}, avro_helper.schema_text);
+    auto scanner = create_avro_scanner(types, ranges, {"booleantype", "longtype", "doubletype", "uniontype"},
+                                       avro_helper.schema_text);
     Status st = scanner->open();
     ASSERT_TRUE(st.ok());
 
@@ -520,7 +530,8 @@ TEST_F(AvroScannerTest, test_union_type_basic) {
     range.__set_path(data_path);
     ranges.emplace_back(range);
 
-    auto scanner = create_avro_scanner(types, ranges, {"booleantype", "longtype", "doubletype", "uniontype"}, avro_helper.schema_text);
+    auto scanner = create_avro_scanner(types, ranges, {"booleantype", "longtype", "doubletype", "uniontype"},
+                                       avro_helper.schema_text);
     Status st = scanner->open();
     ASSERT_TRUE(st.ok());
 
@@ -590,7 +601,8 @@ TEST_F(AvroScannerTest, test_array) {
     range.__set_path(data_path);
     ranges.emplace_back(range);
 
-    auto scanner = create_avro_scanner(types, ranges, {"booleantype", "longtype", "doubletype", "arraytype"}, avro_helper.schema_text);
+    auto scanner = create_avro_scanner(types, ranges, {"booleantype", "longtype", "doubletype", "arraytype"},
+                                       avro_helper.schema_text);
     Status st = scanner->open();
     ASSERT_TRUE(st.ok());
 
@@ -676,12 +688,12 @@ TEST_F(AvroScannerTest, test_complex_schema) {
     TBrokerRangeDesc range;
     range.format_type = TFileFormatType::FORMAT_AVRO;
     range.__isset.jsonpaths = true;
-    range.jsonpaths =
-            R"(["$.id", "$.eventsignature.*", "$.eventparams.*", "$.rawlog.*.data"])";
+    range.jsonpaths = R"(["$.id", "$.eventsignature.*", "$.eventparams.*", "$.rawlog.*.data"])";
     range.__set_path(data_path);
     ranges.emplace_back(range);
 
-    auto scanner = create_avro_scanner(types, ranges, {"id", "eventsignature", "eventparams", "data"}, avro_helper.schema_text);
+    auto scanner = create_avro_scanner(types, ranges, {"id", "eventsignature", "eventparams", "data"},
+                                       avro_helper.schema_text);
     Status st = scanner->open();
     ASSERT_TRUE(st.ok());
 
@@ -760,13 +772,13 @@ TEST_F(AvroScannerTest, test_complex_schema_null_data) {
     range.format_type = TFileFormatType::FORMAT_AVRO;
     range.__isset.strip_outer_array = false;
     range.__isset.jsonpaths = true;
-    range.jsonpaths =
-            R"(["$.id", "$.eventsignature.*", "$.eventparams.*", "$.rawlog.*.data"])";
+    range.jsonpaths = R"(["$.id", "$.eventsignature.*", "$.eventparams.*", "$.rawlog.*.data"])";
     range.__isset.json_root = false;
     range.__set_path(data_path);
     ranges.emplace_back(range);
 
-    auto scanner = create_avro_scanner(types, ranges, {{"id", "eventsignature", "eventparams", "data"}}, avro_helper.schema_text);
+    auto scanner = create_avro_scanner(types, ranges, {{"id", "eventsignature", "eventparams", "data"}},
+                                       avro_helper.schema_text);
     Status st = scanner->open();
     ASSERT_TRUE(st.ok());
 
@@ -835,7 +847,8 @@ TEST_F(AvroScannerTest, test_map_to_json) {
     range.__set_path(data_path);
     ranges.emplace_back(range);
 
-    auto scanner = create_avro_scanner(types, ranges, {"booleantype", "longtype", "doubletype", "maptype"}, avro_helper.schema_text);
+    auto scanner = create_avro_scanner(types, ranges, {"booleantype", "longtype", "doubletype", "maptype"},
+                                       avro_helper.schema_text);
     Status st = scanner->open();
     ASSERT_TRUE(st.ok());
 
@@ -937,12 +950,12 @@ TEST_F(AvroScannerTest, test_root_array) {
     range.format_type = TFileFormatType::FORMAT_AVRO;
     range.__set_path(data_path);
     range.__isset.jsonpaths = true;
-    range.jsonpaths =
-            R"(["$[0].booleantype", "$[0].longtype", "$[0].doubletype", "$[0].stringtype", "$[0].enumtype"])";
+    range.jsonpaths = R"(["$[0].booleantype", "$[0].longtype", "$[0].doubletype", "$[0].stringtype", "$[0].enumtype"])";
     ranges.emplace_back(range);
 
-    auto scanner = create_avro_scanner(types, ranges,
-                                       {"booleantype", "longtype", "doubletype", "stringtype", "enumtype"}, avro_helper.schema_text);
+    auto scanner =
+            create_avro_scanner(types, ranges, {"booleantype", "longtype", "doubletype", "stringtype", "enumtype"},
+                                avro_helper.schema_text);
 
     Status st = scanner->open();
     ASSERT_TRUE(st.ok());

@@ -41,7 +41,7 @@ static Status add_column_with_numeric_value(FixedLengthColumn<T>* column, const 
         int in;
         if (avro_value_get_int(&value, &in) != 0) {
             auto err_msg = strings::Substitute("Get int value error. column=$0", name);
-            return Status::InvalidArgument(err_msg);        
+            return Status::InvalidArgument(err_msg);
         }
         T out{};
 
@@ -57,7 +57,7 @@ static Status add_column_with_numeric_value(FixedLengthColumn<T>* column, const 
         int64_t in;
         if (avro_value_get_long(&value, &in) != 0) {
             auto err_msg = strings::Substitute("Get int64 value error. column=$0", name);
-            return Status::InvalidArgument(err_msg);        
+            return Status::InvalidArgument(err_msg);
         }
         T out{};
 
@@ -73,7 +73,7 @@ static Status add_column_with_numeric_value(FixedLengthColumn<T>* column, const 
         int in;
         if (avro_value_get_boolean(&value, &in) != 0) {
             auto err_msg = strings::Substitute("Get boolean value error. column=$0", name);
-            return Status::InvalidArgument(err_msg);        
+            return Status::InvalidArgument(err_msg);
         }
         T out{};
 
@@ -90,7 +90,7 @@ static Status add_column_with_numeric_value(FixedLengthColumn<T>* column, const 
         float in;
         if (avro_value_get_float(&value, &in) != 0) {
             auto err_msg = strings::Substitute("Get float value error. column=$0", name);
-            return Status::InvalidArgument(err_msg);              
+            return Status::InvalidArgument(err_msg);
         }
 
         T out{};
@@ -101,14 +101,14 @@ static Status add_column_with_numeric_value(FixedLengthColumn<T>* column, const 
             auto err_msg = strings::Substitute("Value is overflow. column=$0, value=$1", name, in);
             return Status::InvalidArgument(err_msg);
         }
-        return Status::OK();        
+        return Status::OK();
     }
 
     case AVRO_DOUBLE: {
         double in;
         if (avro_value_get_double(&value, &in) != 0) {
             auto err_msg = strings::Substitute("Get double value error. column=$0", name);
-            return Status::InvalidArgument(err_msg);              
+            return Status::InvalidArgument(err_msg);
         }
 
         T out{};
@@ -119,13 +119,13 @@ static Status add_column_with_numeric_value(FixedLengthColumn<T>* column, const 
             auto err_msg = strings::Substitute("Value is overflow. column=$0, value=$1", name, in);
             return Status::InvalidArgument(err_msg);
         }
-        return Status::OK();        
+        return Status::OK();
     }
 
     default: {
         auto err_msg = strings::Substitute("Unsupported value type. column=$0", name);
         return Status::DataQualityError(err_msg);
-    }  
+    }
     }
     return Status::OK();
 }
@@ -137,10 +137,10 @@ static Status add_column_with_string_value(FixedLengthColumn<T>* column, const T
     size_t size;
     if (avro_value_get_string(&value, &in, &size) != 0) {
         auto err_msg = strings::Substitute("Get string value error. column=$0", name);
-        return Status::InvalidArgument(err_msg);            
+        return Status::InvalidArgument(err_msg);
     }
 
-    // The size returned for a string object will include the NUL terminator, 
+    // The size returned for a string object will include the NUL terminator,
     // it will be one more than you’d get from calling strlen on the content.
     // Please refer to this link: https://avro.apache.org/docs/1.11.1/api/c/
     --size;
@@ -182,23 +182,22 @@ Status add_numeric_column(Column* column, const TypeDescriptor& type_desc, const
     auto numeric_column = down_cast<FixedLengthColumn<T>*>(column);
     avro_type_t type = avro_value_get_type(&value);
     switch (type) {
-        case AVRO_INT32:
-        case AVRO_INT64:
-        case AVRO_FLOAT:
-        case AVRO_DOUBLE:
-        case AVRO_BOOLEAN:
-        {
-            return add_column_with_numeric_value(numeric_column, type_desc, name, value);
-        }
+    case AVRO_INT32:
+    case AVRO_INT64:
+    case AVRO_FLOAT:
+    case AVRO_DOUBLE:
+    case AVRO_BOOLEAN: {
+        return add_column_with_numeric_value(numeric_column, type_desc, name, value);
+    }
 
-        case AVRO_STRING: {
-            return add_column_with_string_value(numeric_column, type_desc, name, value);
-        }
+    case AVRO_STRING: {
+        return add_column_with_string_value(numeric_column, type_desc, name, value);
+    }
 
-        default: {
-            auto err_msg = strings::Substitute("Unsupported value type. Numeric type is required. column=$0", name);
-            return Status::InvalidArgument(err_msg);
-        }
+    default: {
+        auto err_msg = strings::Substitute("Unsupported value type. Numeric type is required. column=$0", name);
+        return Status::InvalidArgument(err_msg);
+    }
     }
     return Status::OK();
 }
@@ -212,7 +211,7 @@ template Status add_numeric_column<int16_t>(Column* column, const TypeDescriptor
 template Status add_numeric_column<int8_t>(Column* column, const TypeDescriptor& type_desc, const std::string& name,
                                            avro_value_t value);
 template Status add_numeric_column<uint8_t>(Column* column, const TypeDescriptor& type_desc, const std::string& name,
-                                             avro_value_t value);
+                                            avro_value_t value);
 template Status add_numeric_column<double>(Column* column, const TypeDescriptor& type_desc, const std::string& name,
                                            avro_value_t value);
 template Status add_numeric_column<float>(Column* column, const TypeDescriptor& type_desc, const std::string& name,

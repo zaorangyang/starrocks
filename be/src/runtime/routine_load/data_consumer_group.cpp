@@ -212,7 +212,7 @@ Status KafkaDataConsumerGroup::start_all(StreamLoadContext* ctx) {
             } else {
                 Status st = Status::OK();
                 st = (kafka_pipe.get()->*append_data)(static_cast<const char*>(msg->payload()),
-                                                          static_cast<size_t>(msg->len()), row_delimiter);
+                                                      static_cast<size_t>(msg->len()), row_delimiter);
                 if (st.ok()) {
                     received_rows++;
                     left_bytes -= msg->len();

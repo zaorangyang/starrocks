@@ -15,6 +15,7 @@
 #include "formats/avro/numeric_column.h"
 
 #include <gtest/gtest.h>
+
 #include <fstream>
 #include <iostream>
 #include <sstream>

@@ -37,20 +37,20 @@ static Status add_adaptive_nullable_numeric_column(Column* column, const TypeDes
     return Status::OK();
 }
 
-template Status add_adaptive_nullable_numeric_column<int64_t>(Column* column, const TypeDescriptor& type_desc, const std::string& name,
-                                            avro_value_t value);
-template Status add_adaptive_nullable_numeric_column<int32_t>(Column* column, const TypeDescriptor& type_desc, const std::string& name,
-                                            avro_value_t value);
-template Status add_adaptive_nullable_numeric_column<int16_t>(Column* column, const TypeDescriptor& type_desc, const std::string& name,
-                                            avro_value_t value);
-template Status add_adaptive_nullable_numeric_column<int8_t>(Column* column, const TypeDescriptor& type_desc, const std::string& name,
-                                           avro_value_t value);
-template Status add_adaptive_nullable_numeric_column<uint8_t>(Column* column, const TypeDescriptor& type_desc, const std::string& name,
-                                             avro_value_t value);
-template Status add_adaptive_nullable_numeric_column<double>(Column* column, const TypeDescriptor& type_desc, const std::string& name,
-                                           avro_value_t value);
-template Status add_adaptive_nullable_numeric_column<float>(Column* column, const TypeDescriptor& type_desc, const std::string& name,
-                                          avro_value_t value);
+template Status add_adaptive_nullable_numeric_column<int64_t>(Column* column, const TypeDescriptor& type_desc,
+                                                              const std::string& name, avro_value_t value);
+template Status add_adaptive_nullable_numeric_column<int32_t>(Column* column, const TypeDescriptor& type_desc,
+                                                              const std::string& name, avro_value_t value);
+template Status add_adaptive_nullable_numeric_column<int16_t>(Column* column, const TypeDescriptor& type_desc,
+                                                              const std::string& name, avro_value_t value);
+template Status add_adaptive_nullable_numeric_column<int8_t>(Column* column, const TypeDescriptor& type_desc,
+                                                             const std::string& name, avro_value_t value);
+template Status add_adaptive_nullable_numeric_column<uint8_t>(Column* column, const TypeDescriptor& type_desc,
+                                                              const std::string& name, avro_value_t value);
+template Status add_adaptive_nullable_numeric_column<double>(Column* column, const TypeDescriptor& type_desc,
+                                                             const std::string& name, avro_value_t value);
+template Status add_adaptive_nullable_numeric_column<float>(Column* column, const TypeDescriptor& type_desc,
+                                                            const std::string& name, avro_value_t value);
 
 template <typename T>
 static Status add_nullable_numeric_column(Column* column, const TypeDescriptor& type_desc, const std::string& name,
@@ -164,13 +164,13 @@ static Status add_nullable_column(Column* column, const TypeDescriptor& type_des
             size_t n = 0;
             if (avro_value_get_size(&value, &n) != 0) {
                 auto err_msg = strings::Substitute("Failed to get array size, column=$0", name);
-                return Status::InvalidArgument(err_msg);                    
+                return Status::InvalidArgument(err_msg);
             }
-            for (int i=0; i<n; i++) {
+            for (int i = 0; i < n; i++) {
                 avro_value_t element;
                 if (avro_value_get_by_index(&value, i, &element, nullptr) != 0) {
                     auto err_msg = strings::Substitute("Failed to get array element, column=$0", name);
-                    return Status::InvalidArgument(err_msg);                   
+                    return Status::InvalidArgument(err_msg);
                 }
                 RETURN_IF_ERROR(add_nullable_column(elems_column.get(), type_desc.children[0], name, element));
             }
@@ -192,7 +192,8 @@ static Status add_nullable_column(Column* column, const TypeDescriptor& type_des
     }
 }
 
-static Status add_adpative_nullable_column(Column* column, const TypeDescriptor& type_desc, const std::string& name, avro_value_t value) {
+static Status add_adpative_nullable_column(Column* column, const TypeDescriptor& type_desc, const std::string& name,
+                                           avro_value_t value) {
     switch (type_desc.type) {
     case TYPE_BOOLEAN:
         return add_adaptive_nullable_numeric_column<uint8_t>(column, type_desc, name, value);
@@ -220,13 +221,13 @@ static Status add_adpative_nullable_column(Column* column, const TypeDescriptor&
             size_t n = 0;
             if (avro_value_get_size(&value, &n) != 0) {
                 auto err_msg = strings::Substitute("Failed to get array size, column=$0", name);
-                return Status::InvalidArgument(err_msg);                    
+                return Status::InvalidArgument(err_msg);
             }
-            for (int i=0; i<n; i++) {
+            for (int i = 0; i < n; i++) {
                 avro_value_t element;
                 if (avro_value_get_by_index(&value, i, &element, nullptr) != 0) {
                     auto err_msg = strings::Substitute("Failed to get array element, column=$0", name);
-                    return Status::InvalidArgument(err_msg);                   
+                    return Status::InvalidArgument(err_msg);
                 }
                 RETURN_IF_ERROR(add_nullable_column(elems_column.get(), type_desc.children[0], name, element));
             }
@@ -252,22 +253,22 @@ Status add_adaptive_nullable_column(Column* column, const TypeDescriptor& type_d
                                     avro_value_t value, bool invalid_as_null) {
     if (avro_value_get_type(&value) == AVRO_NULL) {
         column->append_nulls(1);
-        return Status::OK();    
+        return Status::OK();
     }
 
     auto st = add_adpative_nullable_column(column, type_desc, name, value);
     if (!st.ok() && invalid_as_null) {
         column->append_nulls(1);
-        return Status::OK();    
+        return Status::OK();
     }
     return st;
 }
 
-Status add_nullable_column(Column* column, const TypeDescriptor& type_desc, const std::string& name,
-                           avro_value_t value, bool invalid_as_null) {
+Status add_nullable_column(Column* column, const TypeDescriptor& type_desc, const std::string& name, avro_value_t value,
+                           bool invalid_as_null) {
     if (avro_value_get_type(&value) == AVRO_NULL) {
         column->append_nulls(1);
-        return Status::OK();    
+        return Status::OK();
     }
 
     auto st = add_nullable_column(column, type_desc, name, value);

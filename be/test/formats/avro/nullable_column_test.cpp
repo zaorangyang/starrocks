@@ -22,10 +22,10 @@
 #include <utility>
 
 #include "column/binary_column.h"
+#include "column/column_helper.h"
 #include "column/fixed_length_column.h"
 #include "runtime/types.h"
 #include "util/defer_op.h"
-#include "column/column_helper.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -213,7 +213,6 @@ TEST_F(AddNullableColumnTest, test_add_multi_dimension_array) {
             avro_value_t array_2;
             avro_value_append(&avro_helper.avro_val, &array_2, NULL);
             {
-
                 {
                     avro_value_t array_3;
                     avro_value_append(&array_2, &array_3, NULL);
@@ -224,7 +223,6 @@ TEST_F(AddNullableColumnTest, test_add_multi_dimension_array) {
                 }
             }
         }
-
     }
 
     auto st = add_nullable_column(column.get(), first_level, "f_array", avro_helper.avro_val, false);

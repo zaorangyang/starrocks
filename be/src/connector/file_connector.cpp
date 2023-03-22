@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "connector/file_connector.h"
+
 #include "exec/avro_scanner.h"
 #include "exec/csv_scanner.h"
 #include "exec/exec_node.h"

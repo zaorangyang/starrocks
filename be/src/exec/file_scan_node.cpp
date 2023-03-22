@@ -18,8 +18,8 @@
 #include <sstream>
 
 #include "column/chunk.h"
-#include "exec/csv_scanner.h"
 #include "exec/avro_scanner.h"
+#include "exec/csv_scanner.h"
 #include "exec/json_scanner.h"
 #include "exec/orc_scanner.h"
 #include "exec/parquet_scanner.h"

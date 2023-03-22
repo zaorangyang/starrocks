@@ -15,8 +15,10 @@
 #pragma once
 
 #include <string_view>
+
 #include "column/nullable_column.h"
 #include "common/compiler_util.h"
+#include "common/status.h"
 #include "exec/file_scanner.h"
 #include "exec/json_scanner.h"
 #include "exprs/json_functions.h"
@@ -24,7 +26,6 @@
 #include "runtime/stream_load/load_stream_mgr.h"
 #include "util/raw_container.h"
 #include "util/slice.h"
-#include "common/status.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -69,7 +70,7 @@ private:
     Status _construct_row(avro_value_t avro_value, Chunk* chunk);
     void _materialize_src_chunk_adaptive_nullable_column(ChunkPtr& chunk);
     Status _construct_column(avro_value_t input_value, Column* column, const TypeDescriptor& type_desc,
-                                        const std::string& col_name);
+                             const std::string& col_name);
     Status _extract_field(avro_value_t& input_value, std::vector<AvroPath> paths, avro_value_t& output_value);
     Status _handle_union(avro_value_t input_value, avro_value_t& branch);
     Status _get_array_element(avro_value_t* cur_value, size_t idx, avro_value_t* element);
@@ -91,4 +92,4 @@ private:
 #endif
 };
 
-}
+} // namespace starrocks

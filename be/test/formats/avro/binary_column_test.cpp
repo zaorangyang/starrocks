@@ -173,7 +173,8 @@ TEST_F(AddBinaryColumnTest, test_add_object) {
 
     auto st = add_binary_column(column.get(), t, "f_object", avro_helper.avro_val);
     ASSERT_TRUE(st.ok());
-    ASSERT_EQ(R"(['{"boolean_type": true, "long_type": 4294967296, "double_type": 1.234567}'])", column->debug_string());
+    ASSERT_EQ(R"(['{"boolean_type": true, "long_type": 4294967296, "double_type": 1.234567}'])",
+              column->debug_string());
 }
 
 TEST_F(AddBinaryColumnTest, test_add_array) {

@@ -16,15 +16,22 @@
 
 #include <fmt/format.h>
 #include <ryu/ryu.h>
-#include <iostream>
 
 #include <algorithm>
+#include <boost/algorithm/string.hpp>
+#include <fstream>
+#include <iostream>
 #include <memory>
 #include <sstream>
 #include <utility>
+#include <vector>
+
+#include "column/adaptive_nullable_column.h"
 #include "column/chunk.h"
 #include "column/column_helper.h"
+#include "exec/avro_scanner.h"
 #include "exec/json_parser.h"
+#include "exec/json_scanner.h"
 #include "exprs/cast_expr.h"
 #include "exprs/column_ref.h"
 #include "exprs/json_functions.h"
@@ -34,18 +41,11 @@
 #include "gutil/strings/substitute.h"
 #include "runtime/exec_env.h"
 #include "runtime/runtime_state.h"
-#include "runtime/types.h"
-#include "util/runtime_profile.h"
 #include "runtime/stream_load/load_stream_mgr.h"
 #include "runtime/stream_load/stream_load_pipe.h"
-#include "column/adaptive_nullable_column.h"
-#include <fstream>
-#include <iostream>
-#include <vector>
-#include "exec/avro_scanner.h"
-#include "exec/json_scanner.h"
-#include <boost/algorithm/string.hpp>
+#include "runtime/types.h"
 #include "util/defer_op.h"
+#include "util/runtime_profile.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -56,17 +56,15 @@ extern "C" {
 
 bool replace(std::string& str, const std::string& from, const std::string& to) {
     size_t start_pos = str.find(from);
-    if(start_pos == std::string::npos)
-        return false;
+    if (start_pos == std::string::npos) return false;
     str.replace(start_pos, from.length(), to);
     return true;
 }
 
 void replaceAll(std::string& str, const std::string& from, const std::string& to) {
-    if(from.empty())
-        return;
+    if (from.empty()) return;
     size_t start_pos = 0;
-    while((start_pos = str.find(from, start_pos)) != std::string::npos) {
+    while ((start_pos = str.find(from, start_pos)) != std::string::npos) {
         str.replace(start_pos, from.length(), to);
         start_pos += to.length(); // In case 'to' contains 'from', like replacing 'x' with 'yx'
     }
@@ -76,15 +74,11 @@ namespace starrocks {
 
 AvroScanner::AvroScanner(RuntimeState* state, RuntimeProfile* profile, const TBrokerScanRange& scan_range,
                          ScannerCounter* counter)
-        : FileScanner(state, profile, scan_range.params, counter),
-          _scan_range(scan_range),
-          _serdes(nullptr) {}
+        : FileScanner(state, profile, scan_range.params, counter), _scan_range(scan_range), _serdes(nullptr) {}
 
 AvroScanner::AvroScanner(RuntimeState* state, RuntimeProfile* profile, const TBrokerScanRange& scan_range,
-                ScannerCounter* counter, const std::string schema_text)
-        : FileScanner(state, profile, scan_range.params, counter),
-            _scan_range(scan_range),
-            _schema_text(schema_text) {}
+                         ScannerCounter* counter, const std::string schema_text)
+        : FileScanner(state, profile, scan_range.params, counter), _scan_range(scan_range), _schema_text(schema_text) {}
 
 AvroScanner::~AvroScanner() {
 #if BE_TEST
@@ -96,8 +90,8 @@ AvroScanner::~AvroScanner() {
 #endif
 }
 
-// Previously, when parsing avro through JsonScanner, we used.*. to handle union data types, 
-// but for the new implementation, we no longer need this pattern. For example, for the following 
+// Previously, when parsing avro through JsonScanner, we used.*. to handle union data types,
+// but for the new implementation, we no longer need this pattern. For example, for the following
 // avro schema:
 // {
 //     "name": "raw_log",
@@ -113,8 +107,8 @@ AvroScanner::~AvroScanner() {
 //         "type": "record"
 //     }]
 // }
-// If you want to select the id field, for the new implementation jsonpath can be written as $.id instead 
-// of $.*.id. To ensure forward compatibility, we find the.*. pattern in the new implementation and replace 
+// If you want to select the id field, for the new implementation jsonpath can be written as $.id instead
+// of $.*.id. To ensure forward compatibility, we find the.*. pattern in the new implementation and replace
 // it with '.'. In addition, there is another case where the union is at the end of the path, where the pattern
 // is.*, in which case.* is removed.
 std::string AvroScanner::preprocess_jsonpaths(std::string jsonpaths) {
@@ -123,8 +117,8 @@ std::string AvroScanner::preprocess_jsonpaths(std::string jsonpaths) {
     return jsonpaths;
 }
 
-// If the user does not specify jsonpaths, we need to generate a corresponding jsonpath 
-// based on the table name. The overall strategy is to use _ as the separator for each path. 
+// If the user does not specify jsonpaths, we need to generate a corresponding jsonpath
+// based on the table name. The overall strategy is to use _ as the separator for each path.
 // As an example, suppose a table has three columns, each named:
 // a_b_c | d_e | f
 // So the jsonpaths we generate are:
@@ -140,7 +134,7 @@ std::string AvroScanner::generate_jsonpaths(std::vector<std::string>& col_names)
         jsonpaths_stream << "\"$";
         std::vector<std::string> paths;
         boost::split(paths, col_name, boost::is_any_of("_"));
-        for (int i=0; i<paths.size(); i++) {
+        for (int i = 0; i < paths.size(); i++) {
             jsonpaths_stream << ".";
             jsonpaths_stream << paths[i];
         }
@@ -158,7 +152,7 @@ Status AvroScanner::open() {
     const TBrokerRangeDesc& range_desc = _scan_range.ranges[0];
     if (avro_file_reader(range_desc.path.c_str(), &_dbreader)) {
         auto err_msg = "Error opening file: " + std::string(avro_strerror());
-        return Status::InternalError(err_msg);        
+        return Status::InternalError(err_msg);
     }
 #endif
 
@@ -177,8 +171,8 @@ Status AvroScanner::open() {
             confluent_schema_registry_url = _scan_range.params.confluent_schema_registry_url;
         }
 
-        serdes_conf_t* sconf = serdes_conf_new(NULL, 0, "schema.registry.url",
-                                            confluent_schema_registry_url.c_str(), NULL);
+        serdes_conf_t* sconf =
+                serdes_conf_new(NULL, 0, "schema.registry.url", confluent_schema_registry_url.c_str(), NULL);
         _serdes = serdes_new(sconf, _err_buf, sizeof(_err_buf));
         if (!_serdes) {
             LOG(ERROR) << "failed to create serdes handle: " << _err_buf;
@@ -192,7 +186,7 @@ Status AvroScanner::open() {
         RETURN_IF_ERROR(JsonScanner::parse_json_paths(jsonpaths, &_json_paths));
     } else {
         std::vector<std::string> col_names;
-        for (int i=0; i<_src_slot_descriptors.size(); i++) {
+        for (int i = 0; i < _src_slot_descriptors.size(); i++) {
             col_names.push_back(_src_slot_descriptors[i]->col_name());
         }
         std::string jsonpaths = generate_jsonpaths(col_names);
@@ -247,13 +241,13 @@ Status AvroScanner::_construct_row(avro_value_t avro_value, Chunk* chunk) {
         avro_value_t output_value;
         auto st = _extract_field(avro_value, _json_paths[i], output_value);
         if (st.ok()) {
-            RETURN_IF_ERROR(_construct_column(output_value, column, _src_slot_descriptors[i]->type(), _src_slot_descriptors[i]->col_name()));
+            RETURN_IF_ERROR(_construct_column(output_value, column, _src_slot_descriptors[i]->type(),
+                                              _src_slot_descriptors[i]->col_name()));
         } else if (st.is_not_found()) {
             column->append_nulls(1);
         } else {
             return st;
         }
-        
     }
     return Status::OK();
 }
@@ -292,7 +286,7 @@ Status AvroScanner::_parse_avro(Chunk* chunk, std::shared_ptr<SequentialFile> fi
         result = avro_value_to_json(&avro_value, 1, &avro_as_json);
         if (result != 0) {
             auto err_msg = "Unable to read value: " + std::string(avro_strerror());
-            return Status::InternalError(err_msg);        
+            return Status::InternalError(err_msg);
         }
         free(avro_as_json);
 #else
@@ -307,12 +301,13 @@ Status AvroScanner::_parse_avro(Chunk* chunk, std::shared_ptr<SequentialFile> fi
         length = _parser_buf->remaining();
         DeferOp op([&] { avro_value_decref(&avro_value); });
         serdes_schema_t* schema;
-        serdes_err_t err = serdes_deserialize_avro(_serdes, &avro_value, &schema, data, length, _err_buf, sizeof(_err_buf));
+        serdes_err_t err =
+                serdes_deserialize_avro(_serdes, &avro_value, &schema, data, length, _err_buf, sizeof(_err_buf));
         if (err) {
             auto err_msg = "serdes deserialize avro failed: " + std::string(_err_buf);
             LOG(ERROR) << err_msg;
             _counter->num_rows_filtered++;
-            _state->append_error_msg_to_file("",err_msg);
+            _state->append_error_msg_to_file("", err_msg);
             return Status::InternalError("serdes deserialize avro failed");
         }
 #endif
@@ -332,7 +327,6 @@ Status AvroScanner::_parse_avro(Chunk* chunk, std::shared_ptr<SequentialFile> fi
     }
     return Status::OK();
 }
-
 
 StatusOr<ChunkPtr> AvroScanner::get_next() {
     SCOPED_RAW_TIMER(&_counter->total_ns);
@@ -518,15 +512,15 @@ Status AvroScanner::_get_array_element(avro_value_t* cur_value, size_t idx, avro
     size_t element_count;
     if (avro_value_get_size(cur_value, &element_count) != 0) {
         auto err_msg = "Cannot get avro array size: " + std::string(avro_strerror());
-        return Status::InternalError(err_msg);   
+        return Status::InternalError(err_msg);
     }
     if (idx >= element_count) {
         auto err_msg = "array idx greater than the avro array max size";
-        return Status::InternalError(err_msg);   
+        return Status::InternalError(err_msg);
     }
     if (avro_value_get_by_index(cur_value, idx, element, nullptr) != 0) {
         auto err_msg = "Cannot get avro value from array: " + std::string(avro_strerror());
-        return Status::InternalError(err_msg);   
+        return Status::InternalError(err_msg);
     }
     return Status::OK();
 }
@@ -566,7 +560,7 @@ Status AvroScanner::_handle_union(avro_value_t input_value, avro_value_t& branch
     return Status::OK();
 }
 
-// This function extracts the corresponding field data from avro data according to 
+// This function extracts the corresponding field data from avro data according to
 // the corresponding path of each column, where:
 // input_value: input param
 // paths: input param
@@ -586,12 +580,12 @@ Status AvroScanner::_extract_field(avro_value_t& input_value, std::vector<AvroPa
         return Status::OK();
     }
 
-    // The starting point for our progression is an array, and we cannot use avro_value_get_by_name 
+    // The starting point for our progression is an array, and we cannot use avro_value_get_by_name
     // to get the value of the next field. We want the path pattern to look like this:
     // {
     //     key == "$"
     //     idx = 0,1,2,3....
-    // } 
+    // }
     if (avro_value_get_type(&cur_value) == AVRO_ARRAY) {
         if (paths[0].key != "$" || paths[0].idx < 0) {
             auto err_msg = "The avro root type is an array, and you should select a specific array element.";
@@ -604,13 +598,13 @@ Status AvroScanner::_extract_field(avro_value_t& input_value, std::vector<AvroPa
 
     // paths[0] should be $, skip it
     for (int i = 1; i < paths.size(); i++) {
-        // The union type is used to provide nullable semantics. For scenarios where AVRO imports, 
+        // The union type is used to provide nullable semantics. For scenarios where AVRO imports,
         // AVRO's union type can only be of this pattern:
         // {
         //      null,
         //      Other Type
         // }
-        // For each iteration, we first determine if the current avro type is union. If it is union, 
+        // For each iteration, we first determine if the current avro type is union. If it is union,
         // we continue to determine if it is null. If so, we stop the progression and return.
         // If it is not null, the corresponding value is extracted and the progress continues.
         if (avro_value_get_type(&cur_value) == AVRO_UNION) {
@@ -644,7 +638,7 @@ Status AvroScanner::_extract_field(avro_value_t& input_value, std::vector<AvroPa
                 //      "items": "string",
                 //      "type": "array"
                 //    }]
-                // } 
+                // }
                 if (avro_value_get_type(&cur_value) == AVRO_UNION) {
                     avro_value_t branch;
                     RETURN_IF_ERROR(_handle_union(cur_value, branch));
@@ -656,7 +650,8 @@ Status AvroScanner::_extract_field(avro_value_t& input_value, std::vector<AvroPa
                 }
                 // cur_value must be an array type, otherwise it is invalid
                 if (avro_value_get_type(&cur_value) != AVRO_ARRAY) {
-                    auto err_msg = "A non-array type was found during avro parsing. Please check the path you specified";
+                    auto err_msg =
+                            "A non-array type was found during avro parsing. Please check the path you specified";
                     return Status::InternalError(err_msg);
                 }
                 avro_value_t element;
@@ -666,7 +661,7 @@ Status AvroScanner::_extract_field(avro_value_t& input_value, std::vector<AvroPa
         } else {
             // If no field can be found, end the parsing of the row and return not found.
             auto msg = strings::Substitute("Cannot get field: $0. err msg: $1.", paths[i].key, avro_strerror());
-            return Status::NotFound(msg);                
+            return Status::NotFound(msg);
         }
     }
     // Remove union
@@ -680,8 +675,8 @@ Status AvroScanner::_extract_field(avro_value_t& input_value, std::vector<AvroPa
 }
 
 Status AvroScanner::_construct_column(avro_value_t input_value, Column* column, const TypeDescriptor& type_desc,
-                                     const std::string& col_name) {
+                                      const std::string& col_name) {
     return add_adaptive_nullable_column(column, type_desc, col_name, input_value, !_strict_mode);
 }
 
-}
+} // namespace starrocks
