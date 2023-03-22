@@ -36,7 +36,7 @@ extern "C" {
 
 namespace starrocks {
 
-class AddBinaryColumnTest : public ::testing::Test {};
+class AvroAddBinaryColumnTest : public ::testing::Test {};
 
 struct AvroHelper {
     avro_schema_t schema = NULL;
@@ -60,7 +60,7 @@ static void init_avro_value(std::string schema_path, AvroHelper& avro_helper) {
     avro_generic_value_new(avro_helper.iface, &avro_helper.avro_val);
 }
 
-TEST_F(AddBinaryColumnTest, test_add_string) {
+TEST_F(AvroAddBinaryColumnTest, test_add_string) {
     auto column = BinaryColumn::create();
     TypeDescriptor t = TypeDescriptor::create_varchar_type(20);
 
@@ -81,7 +81,7 @@ TEST_F(AddBinaryColumnTest, test_add_string) {
     ASSERT_EQ("['3.14']", column->debug_string());
 }
 
-TEST_F(AddBinaryColumnTest, test_add_enum) {
+TEST_F(AvroAddBinaryColumnTest, test_add_enum) {
     auto column = BinaryColumn::create();
     TypeDescriptor t = TypeDescriptor::create_varchar_type(20);
 
@@ -102,7 +102,7 @@ TEST_F(AddBinaryColumnTest, test_add_enum) {
     ASSERT_EQ("['DIAMONDS']", column->debug_string());
 }
 
-TEST_F(AddBinaryColumnTest, test_add_number) {
+TEST_F(AvroAddBinaryColumnTest, test_add_number) {
     auto column = BinaryColumn::create();
     TypeDescriptor t = TypeDescriptor::create_varchar_type(20);
     std::string schema_path = "./be/test/formats/test_data/avro/single_float_schema.json";
@@ -122,7 +122,7 @@ TEST_F(AddBinaryColumnTest, test_add_number) {
     ASSERT_EQ("['3.140000']", column->debug_string());
 }
 
-TEST_F(AddBinaryColumnTest, test_add_boolean) {
+TEST_F(AvroAddBinaryColumnTest, test_add_boolean) {
     auto column = BinaryColumn::create();
     TypeDescriptor t = TypeDescriptor::create_varchar_type(20);
 
@@ -143,7 +143,7 @@ TEST_F(AddBinaryColumnTest, test_add_boolean) {
     ASSERT_EQ("['1']", column->debug_string());
 }
 
-TEST_F(AddBinaryColumnTest, test_add_object) {
+TEST_F(AvroAddBinaryColumnTest, test_add_object) {
     auto column = BinaryColumn::create();
     TypeDescriptor t = TypeDescriptor::create_varchar_type(200);
 
@@ -177,7 +177,7 @@ TEST_F(AddBinaryColumnTest, test_add_object) {
               column->debug_string());
 }
 
-TEST_F(AddBinaryColumnTest, test_add_array) {
+TEST_F(AvroAddBinaryColumnTest, test_add_array) {
     auto column = BinaryColumn::create();
     TypeDescriptor t = TypeDescriptor::create_varchar_type(200);
 
@@ -203,7 +203,7 @@ TEST_F(AddBinaryColumnTest, test_add_array) {
     ASSERT_EQ(R"(['[4294967297, 4294967298]'])", column->debug_string());
 }
 
-TEST_F(AddBinaryColumnTest, test_add_map) {
+TEST_F(AvroAddBinaryColumnTest, test_add_map) {
     auto column = BinaryColumn::create();
     TypeDescriptor t = TypeDescriptor::create_varchar_type(200);
 

@@ -35,7 +35,7 @@ extern "C" {
 
 namespace starrocks {
 
-class AddNumericColumnTest : public ::testing::Test {};
+class AvroAddNumericColumnTest : public ::testing::Test {};
 
 struct AvroHelper {
     avro_schema_t schema = NULL;
@@ -59,7 +59,7 @@ static void init_avro_value(std::string schema_path, AvroHelper& avro_helper) {
     avro_generic_value_new(avro_helper.iface, &avro_helper.avro_val);
 }
 
-TEST_F(AddNumericColumnTest, test_add_number) {
+TEST_F(AvroAddNumericColumnTest, test_add_number) {
     auto column = FixedLengthColumn<float>::create();
     TypeDescriptor t(TYPE_FLOAT);
     std::string schema_path = "./be/test/formats/test_data/avro/single_float_schema.json";
@@ -79,7 +79,7 @@ TEST_F(AddNumericColumnTest, test_add_number) {
     ASSERT_EQ("[3.14]", column->debug_string());
 }
 
-TEST_F(AddNumericColumnTest, test_add_string) {
+TEST_F(AvroAddNumericColumnTest, test_add_string) {
     auto column = FixedLengthColumn<float>::create();
     TypeDescriptor t(TYPE_FLOAT);
     std::string schema_path = "./be/test/formats/test_data/avro/single_string_schema.json";
@@ -99,7 +99,7 @@ TEST_F(AddNumericColumnTest, test_add_string) {
     ASSERT_EQ("[3.14]", column->debug_string());
 }
 
-TEST_F(AddNumericColumnTest, test_add_boolean) {
+TEST_F(AvroAddNumericColumnTest, test_add_boolean) {
     auto column = FixedLengthColumn<int8_t>::create();
     TypeDescriptor t(TYPE_BOOLEAN);
     std::string schema_path = "./be/test/formats/test_data/avro/single_boolean_schema.json";
@@ -119,7 +119,7 @@ TEST_F(AddNumericColumnTest, test_add_boolean) {
     ASSERT_EQ("[1]", column->debug_string());
 }
 
-TEST_F(AddNumericColumnTest, test_add_invalid) {
+TEST_F(AvroAddNumericColumnTest, test_add_invalid) {
     auto column = FixedLengthColumn<float>::create();
     TypeDescriptor t(TYPE_FLOAT);
     std::string schema_path = "./be/test/exec/test_data/avro_scanner/avro_nest_schema.json";
@@ -150,7 +150,7 @@ TEST_F(AddNumericColumnTest, test_add_invalid) {
     ASSERT_TRUE(st.is_invalid_argument());
 }
 
-TEST_F(AddNumericColumnTest, test_add_int_overflow) {
+TEST_F(AvroAddNumericColumnTest, test_add_int_overflow) {
     auto column = FixedLengthColumn<int32_t>::create();
     TypeDescriptor t(TYPE_INT);
     std::string schema_path = "./be/test/formats/test_data/avro/single_long_schema.json";
@@ -168,7 +168,7 @@ TEST_F(AddNumericColumnTest, test_add_int_overflow) {
     ASSERT_TRUE(st.is_invalid_argument());
 }
 
-TEST_F(AddNumericColumnTest, test_add_int64_lowerbound) {
+TEST_F(AvroAddNumericColumnTest, test_add_int64_lowerbound) {
     auto column = FixedLengthColumn<int64_t>::create();
     TypeDescriptor t(TYPE_BIGINT);
     std::string schema_path = "./be/test/formats/test_data/avro/single_long_schema.json";

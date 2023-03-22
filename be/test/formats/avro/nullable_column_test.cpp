@@ -37,7 +37,7 @@ extern "C" {
 
 namespace starrocks {
 
-class AddNullableColumnTest : public ::testing::Test {};
+class AvroAddNullableColumnTest : public ::testing::Test {};
 
 struct AvroHelper {
     avro_schema_t schema = NULL;
@@ -61,7 +61,7 @@ static void init_avro_value(std::string schema_path, AvroHelper& avro_helper) {
     avro_generic_value_new(avro_helper.iface, &avro_helper.avro_val);
 }
 
-TEST_F(AddNullableColumnTest, test_add_numeric) {
+TEST_F(AvroAddNullableColumnTest, test_add_numeric) {
     TypeDescriptor t(TYPE_FLOAT);
     auto column = ColumnHelper::create_column(t, true);
     std::string schema_path = "./be/test/formats/test_data/avro/single_float_schema.json";
@@ -81,7 +81,7 @@ TEST_F(AddNullableColumnTest, test_add_numeric) {
     ASSERT_EQ("[3.14]", column->debug_string());
 }
 
-TEST_F(AddNullableColumnTest, test_add_binary) {
+TEST_F(AvroAddNullableColumnTest, test_add_binary) {
     TypeDescriptor t = TypeDescriptor::create_char_type(20);
     auto column = ColumnHelper::create_column(t, true);
 
@@ -102,7 +102,7 @@ TEST_F(AddNullableColumnTest, test_add_binary) {
     ASSERT_EQ("['3.140000']", column->debug_string());
 }
 
-TEST_F(AddNullableColumnTest, test_record_json) {
+TEST_F(AvroAddNullableColumnTest, test_record_json) {
     TypeDescriptor t(TYPE_JSON);
     auto column = ColumnHelper::create_column(t, true);
 
@@ -135,7 +135,7 @@ TEST_F(AddNullableColumnTest, test_record_json) {
     ASSERT_EQ(R"([{"boolean_type": true, "double_type": 1.234567, "long_type": 4294967296}])", column->debug_string());
 }
 
-TEST_F(AddNullableColumnTest, test_map_json) {
+TEST_F(AvroAddNullableColumnTest, test_map_json) {
     TypeDescriptor t(TYPE_JSON);
     auto column = ColumnHelper::create_column(t, true);
 
@@ -161,7 +161,7 @@ TEST_F(AddNullableColumnTest, test_map_json) {
     ASSERT_EQ(R"([{"ele1": 4294967297, "ele2": 4294967298}])", column->debug_string());
 }
 
-TEST_F(AddNullableColumnTest, test_add_multi_dimension_array) {
+TEST_F(AvroAddNullableColumnTest, test_add_multi_dimension_array) {
     TypeDescriptor first_level(TYPE_ARRAY);
     first_level.children.emplace_back(TYPE_ARRAY);
     TypeDescriptor* second_level = &first_level.children[0];
@@ -231,7 +231,7 @@ TEST_F(AddNullableColumnTest, test_add_multi_dimension_array) {
     ASSERT_EQ("[[[[4294967297,4294967296],[4294967295]],[[4294967294]]]]", column->debug_string());
 }
 
-TEST_F(AddNullableColumnTest, test_add_invalid_as_null) {
+TEST_F(AvroAddNullableColumnTest, test_add_invalid_as_null) {
     TypeDescriptor t{TYPE_INT};
     auto column = ColumnHelper::create_column(t, true);
 
@@ -258,7 +258,7 @@ TEST_F(AddNullableColumnTest, test_add_invalid_as_null) {
     ASSERT_EQ("[NULL]", column->debug_string());
 }
 
-TEST_F(AddNullableColumnTest, test_add_invalid) {
+TEST_F(AvroAddNullableColumnTest, test_add_invalid) {
     TypeDescriptor t{TYPE_INT};
     auto column = ColumnHelper::create_column(t, true);
 

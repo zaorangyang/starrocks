@@ -72,6 +72,8 @@ void replaceAll(std::string& str, const std::string& from, const std::string& to
 
 namespace starrocks {
 
+const int64_t MAX_ERROR_LINES_IN_FILE = 50;
+
 AvroScanner::AvroScanner(RuntimeState* state, RuntimeProfile* profile, const TBrokerScanRange& scan_range,
                          ScannerCounter* counter)
         : FileScanner(state, profile, scan_range.params, counter), _scan_range(scan_range), _serdes(nullptr) {}
