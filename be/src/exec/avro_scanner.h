@@ -39,10 +39,37 @@ namespace starrocks {
 
 using AvroPath = SimpleJsonPath;
 
+
+class AvroBenchData {
+public:
+    StatusOr<avro_value_t> get_next_row() {
+        if (_cur_row >= _avro_values.size()) {
+            return Status::EndOfFile("no rows in buffer");
+        } else {
+            return _avro_values[_cur_row++];
+        }
+    }
+
+    void put_row(avro_value_t avro_value) {
+        _avro_values.emplace_back(avro_value);
+    }
+
+    int64_t get_rows() {
+        return _avro_values.size();
+    }
+
+private:
+    std::vector<avro_value_t> _avro_values;
+    int64_t _cur_row = 0;
+};
+
 class AvroScanner final : public FileScanner {
 public:
     AvroScanner(RuntimeState* state, RuntimeProfile* profile, const TBrokerScanRange& scan_range,
                 ScannerCounter* counter);
+
+    AvroScanner(RuntimeState* state, RuntimeProfile* profile, const TBrokerScanRange& scan_range,
+                ScannerCounter* counter, AvroBenchData bench_data);
 
     // A new constructor is introduced for the single test.
     AvroScanner(RuntimeState* state, RuntimeProfile* profile, const TBrokerScanRange& scan_range,
@@ -90,6 +117,8 @@ private:
 #if BE_TEST
     avro_file_reader_t _dbreader;
 #endif
+
+    AvroBenchData _bench_data;
 };
 
 } // namespace starrocks

@@ -11,7 +11,7 @@
 #include <utility>
 #include <fstream>
 #include <sstream>
-#include "exec/json_scanner.h"
+#include "exec/avro_scanner.h"
 #include "column/chunk.h"
 #include "column/datum_tuple.h"
 #include "gen_cpp/Descriptors_types.h"
@@ -34,19 +34,18 @@ extern "C" {
 
 namespace starrocks {
 
-#define JSONBENCHMARK
+#define AVROBENCHMARK
 
-class JsonScannerBench {
+class AvroScannerBench {
 public:
-    std::unique_ptr<JsonScanner> create_json_scanner(const std::vector<TypeDescriptor>& types,
+    std::unique_ptr<AvroScanner> create_avro_scanner(const std::vector<TypeDescriptor>& types,
                                                      const std::vector<TBrokerRangeDesc>& ranges,
                                                      const std::vector<std::string>& col_names,
-                                                     BenchData& bench_data) {
+                                                     AvroBenchData& bench_data) {
         config::vector_chunk_size = 4096;
         _profile = _pool.add(new RuntimeProfile("test"));
         _counter = _pool.add(new ScannerCounter());
         _state = _pool.add(new RuntimeState(TQueryGlobals()));
-        std::string starrocks_home = getenv("STARROCKS_HOME");
         /// Init DescriptorTable
         TDescriptorTableBuilder desc_tbl_builder;
         TTupleDescriptorBuilder tuple_desc_builder;
@@ -89,7 +88,7 @@ public:
         TBrokerScanRange* broker_scan_range = _pool.add(new TBrokerScanRange());
         broker_scan_range->params = *params;
         broker_scan_range->ranges = ranges;
-        return std::make_unique<JsonScanner>(_state, _profile, *broker_scan_range, _counter, &bench_data);
+        return std::make_unique<AvroScanner>(_state, _profile, *broker_scan_range, _counter, bench_data);
     }
 
 private:
@@ -127,18 +126,6 @@ int main(int argc, char** argv) {
     }
 
 
-    /*
-     * 1. 构建types
-     * 2. ranges
-     * 3. colnames
-     * 4. scanner open
-     * 5. scanner next
-     * 6. 计算时间j
-     * 7. 新的问题：
-     *    1. 我们希望把IO和parsing分开
-     *    2. 每次jsonscanner只解析一条数据
-     */
-
     uint8_t* buffer = (uint8_t*)malloc(BUFFER_SIZE * sizeof(uint8_t));
     DeferOp bufferDeleter([&] {
         if (buffer != nullptr) {
@@ -159,10 +146,8 @@ int main(int argc, char** argv) {
 		std::cerr << "Can't open the file." << std::endl;
 		return -1;
 	}
-    BenchData bench_data;
-    uint8_t* cur_pos = buffer;
-    int64_t count = 0;
-    std::vector<avro_value_t> avro_values;
+
+    AvroBenchData bench_data;
     for (int64_t i=0; i<data_rows; i++) {
         avro_value_iface_t  *clickbench_class = avro_generic_class_from_schema(schema);
         avro_value_t clickbench;
@@ -170,7 +155,7 @@ int main(int argc, char** argv) {
         int rval;
         rval = avro_file_reader_read_value(dbreader, &clickbench);
         if (rval == 0) {
-            avro_values.push_back(clickbench);
+            bench_data.put_row(clickbench);
             /* We no longer need this memory */
             avro_value_iface_decref(clickbench_class);
         } else {
@@ -300,8 +285,8 @@ int main(int argc, char** argv) {
     range.__set_path(filename);
     ranges.emplace_back(range);
 
-    JsonScannerBench scanner_bench;
-    auto scanner = scanner_bench.create_json_scanner(types, ranges, {"CounterID", "EventDate", "UserID", "EventTime", "WatchID", "JavaEnable", "Title", "GoodEvent", "ClientIP", "RegionID", "CounterClass", "OS", "UserAgent", "URL", "Referer", "IsRefresh", "RefererCategoryID", "RefererRegionID", "URLCategoryID", "URLRegionID", "ResolutionWidth", "ResolutionHeight", "ResolutionDepth", "FlashMajor", "FlashMinor", "FlashMinor2", "NetMajor", "NetMinor", "UserAgentMajor", "UserAgentMinor", "CookieEnable", "JavascriptEnable", "IsMobile", "MobilePhone", "MobilePhoneModel", "Params", "IPNetworkID", "TraficSourceID", "SearchEngineID", "SearchPhrase", "AdvEngineID", "IsArtifical", "WindowClientWidth", "WindowClientHeight", "ClientTimeZone", "ClientEventTime", "SilverlightVersion1", "SilverlightVersion2", "SilverlightVersion3", "SilverlightVersion4", "PageCharset", "CodeVersion", "IsLink", "IsDownload", "IsNotBounce", "FUniqID", "OriginalURL", "HID", "IsOldCounter", "IsEvent", "IsParameter", "DontCountHits", "WithHash", "HitColor", "LocalEventTime", "Age", "Sex", "Income", "Interests", "Robotness", "RemoteIP", "WindowName", "OpenerName", "HistoryLength", "BrowserLanguage", "BrowserCountry", "SocialNetwork", "SocialAction", "HTTPError", "SendTiming", "DNSTiming", "ConnectTiming", "ResponseStartTiming", "ResponseEndTiming", "FetchTiming", "SocialSourceNetworkID", "SocialSourcePage", "ParamPrice", "ParamOrderID", "ParamCurrency", "ParamCurrencyID", "OpenstatServiceName", "OpenstatCampaignID", "OpenstatAdID", "OpenstatSourceID", "UTMSource", "UTMMedium", "UTMCampaign", "UTMContent", "UTMTerm", "FromTag", "HasGCLID", "RefererHash", "URLHash", "CLID"}, bench_data);
+    AvroScannerBench scanner_bench;
+    auto scanner = scanner_bench.create_avro_scanner(types, ranges, {"CounterID", "EventDate", "UserID", "EventTime", "WatchID", "JavaEnable", "Title", "GoodEvent", "ClientIP", "RegionID", "CounterClass", "OS", "UserAgent", "URL", "Referer", "IsRefresh", "RefererCategoryID", "RefererRegionID", "URLCategoryID", "URLRegionID", "ResolutionWidth", "ResolutionHeight", "ResolutionDepth", "FlashMajor", "FlashMinor", "FlashMinor2", "NetMajor", "NetMinor", "UserAgentMajor", "UserAgentMinor", "CookieEnable", "JavascriptEnable", "IsMobile", "MobilePhone", "MobilePhoneModel", "Params", "IPNetworkID", "TraficSourceID", "SearchEngineID", "SearchPhrase", "AdvEngineID", "IsArtifical", "WindowClientWidth", "WindowClientHeight", "ClientTimeZone", "ClientEventTime", "SilverlightVersion1", "SilverlightVersion2", "SilverlightVersion3", "SilverlightVersion4", "PageCharset", "CodeVersion", "IsLink", "IsDownload", "IsNotBounce", "FUniqID", "OriginalURL", "HID", "IsOldCounter", "IsEvent", "IsParameter", "DontCountHits", "WithHash", "HitColor", "LocalEventTime", "Age", "Sex", "Income", "Interests", "Robotness", "RemoteIP", "WindowName", "OpenerName", "HistoryLength", "BrowserLanguage", "BrowserCountry", "SocialNetwork", "SocialAction", "HTTPError", "SendTiming", "DNSTiming", "ConnectTiming", "ResponseStartTiming", "ResponseEndTiming", "FetchTiming", "SocialSourceNetworkID", "SocialSourcePage", "ParamPrice", "ParamOrderID", "ParamCurrency", "ParamCurrencyID", "OpenstatServiceName", "OpenstatCampaignID", "OpenstatAdID", "OpenstatSourceID", "UTMSource", "UTMMedium", "UTMCampaign", "UTMContent", "UTMTerm", "FromTag", "HasGCLID", "RefererHash", "URLHash", "CLID"}, bench_data);
     Status st = scanner->open();
     if (!st.ok()) {
         std::cout << "Open scanner error. status: " << st.to_string();
@@ -309,20 +294,6 @@ int main(int argc, char** argv) {
     
     // Benchmark 2: Parsing
     start = std::chrono::system_clock::now();
-    for (int i=0; i<avro_values.size(); i++) {
-        avro_value_t avro_value = avro_values[i];
-        char* as_json;
-        if (avro_value_to_json(&avro_value, 1, &as_json)) {
-            std::cout << "avro to json failed: " << avro_strerror();
-            exit(2);
-        }
-        memcpy(cur_pos, as_json, strlen(as_json));
-        bench_data.put_row(cur_pos, strlen(as_json));
-        cur_pos = cur_pos + strlen(as_json);
-        count++;
-        free(as_json);
-        avro_value_decref(&avro_value);
-    }
     int64_t parsed_count = 0;
     while (true) {
         auto ret = scanner->get_next();

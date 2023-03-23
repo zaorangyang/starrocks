@@ -36,7 +36,6 @@ public:
         _profile = _pool.add(new RuntimeProfile("test"));
         _counter = _pool.add(new ScannerCounter());
         _state = _pool.add(new RuntimeState(TQueryGlobals()));
-        std::string starrocks_home = getenv("STARROCKS_HOME");
         /// Init DescriptorTable
         TDescriptorTableBuilder desc_tbl_builder;
         TTupleDescriptorBuilder tuple_desc_builder;

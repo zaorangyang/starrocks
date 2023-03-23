@@ -70,6 +70,9 @@ void replaceAll(std::string& str, const std::string& from, const std::string& to
     }
 }
 
+#define AVROBENCHMARK
+
+
 namespace starrocks {
 
 const int64_t MAX_ERROR_LINES_IN_FILE = 50;
@@ -81,6 +84,10 @@ AvroScanner::AvroScanner(RuntimeState* state, RuntimeProfile* profile, const TBr
 AvroScanner::AvroScanner(RuntimeState* state, RuntimeProfile* profile, const TBrokerScanRange& scan_range,
                          ScannerCounter* counter, const std::string schema_text)
         : FileScanner(state, profile, scan_range.params, counter), _scan_range(scan_range), _schema_text(schema_text) {}
+
+AvroScanner::AvroScanner(RuntimeState* state, RuntimeProfile* profile, const TBrokerScanRange& scan_range,
+                         ScannerCounter* counter, AvroBenchData bench_data)
+        : FileScanner(state, profile, scan_range.params, counter), _scan_range(scan_range), _serdes(nullptr), _bench_data(bench_data) {}
 
 AvroScanner::~AvroScanner() {
 #if BE_TEST
@@ -164,7 +171,7 @@ Status AvroScanner::open() {
     if (_scan_range.ranges.empty()) {
         return Status::OK();
     }
-#ifndef BE_TEST
+#ifndef AVROBENCHMARK
     if (_serdes == nullptr) {
         std::string confluent_schema_registry_url;
         if (!_scan_range.params.__isset.confluent_schema_registry_url) {
@@ -232,7 +239,7 @@ Status AvroScanner::_construct_row(avro_value_t avro_value, Chunk* chunk) {
     size_t slot_size = _src_slot_descriptors.size();
     size_t jsonpath_size = _json_paths.size();
     for (size_t i = 0; i < slot_size; i++) {
-        if (_src_slot_descriptors[i] == nullptr) {
+        if (UNLIKELY(_src_slot_descriptors[i] == nullptr)) {
             continue;
         }
         auto column = down_cast<NullableColumn*>(chunk->get_column_by_slot_id(_src_slot_descriptors[i]->id()).get());
@@ -259,38 +266,13 @@ Status AvroScanner::_parse_avro(Chunk* chunk, std::shared_ptr<SequentialFile> fi
     DCHECK_EQ(0, chunk->num_rows());
     for (size_t num_rows = chunk->num_rows(); num_rows < capacity; /**/) {
         avro_value_t avro_value;
-#ifdef BE_TEST
-        // In general, we want to test component injection schemastr.
-        avro_schema_error_t error;
-        avro_schema_t schema = NULL;
-        int result = avro_schema_from_json(_schema_text.c_str(), _schema_text.size(), &schema, &error);
-        if (result != 0) {
-            auto err_msg = "parse schema from json error: " + std::string(avro_strerror());
-            return Status::InternalError(err_msg);
+#ifdef AVROBENCHMARK
+        auto data = _bench_data.get_next_row();
+        if (!data.status().ok()) {
+            return data.status();
         }
-        avro_value_iface_t* iface = avro_generic_class_from_schema(schema);
-        if (avro_generic_value_new(iface, &avro_value)) {
-            auto err_msg = "Cannot allocate new value instance: " + std::string(avro_strerror());
-            return Status::InternalError(err_msg);
-        }
-        DeferOp avro_deleter([&] {
-            avro_schema_decref(schema);
-            avro_value_iface_decref(iface);
-            avro_value_decref(&avro_value);
-        });
-        result = avro_file_reader_read_value(_dbreader, &avro_value);
-        if (result != 0) {
-            auto err_msg = "read avro value error: " + std::string(avro_strerror());
-            return Status::EndOfFile(err_msg);
-        }
-
-        char* avro_as_json = nullptr;
-        result = avro_value_to_json(&avro_value, 1, &avro_as_json);
-        if (result != 0) {
-            auto err_msg = "Unable to read value: " + std::string(avro_strerror());
-            return Status::InternalError(err_msg);
-        }
-        free(avro_as_json);
+        avro_value = data.value();
+        DeferOp op([&] { avro_value_decref(&avro_value); });
 #else
         const uint8_t* data{};
         size_t length = 0;
