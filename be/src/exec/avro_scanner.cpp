@@ -243,13 +243,13 @@ Status AvroScanner::_construct_row(avro_value_t avro_value, Chunk* chunk) {
             continue;
         }
         auto column = down_cast<NullableColumn*>(chunk->get_column_by_slot_id(_src_slot_descriptors[i]->id()).get());
-        if (i >= jsonpath_size) {
+        if (UNLIKELY(i >= jsonpath_size)) {
             column->append_nulls(1);
             continue;
         }
         avro_value_t output_value;
         auto st = _extract_field(avro_value, _json_paths[i], output_value);
-        if (st.ok()) {
+        if (LIKELY(st.ok())) {
             RETURN_IF_ERROR(_construct_column(output_value, column, _src_slot_descriptors[i]->type(),
                                               _src_slot_descriptors[i]->col_name()));
         } else if (st.is_not_found()) {
@@ -308,6 +308,7 @@ Status AvroScanner::_parse_avro(Chunk* chunk, std::shared_ptr<SequentialFile> fi
             chunk->set_num_rows(chunk_row_num);
             return st;
         }
+        num_rows++;
     }
     return Status::OK();
 }
@@ -553,7 +554,7 @@ Status AvroScanner::_extract_field(avro_value_t& input_value, std::vector<AvroPa
     avro_value_t cur_value = input_value;
 
     // Select the entire data
-    if (paths.size() == 1 && paths[0].key == "$" && paths[0].idx == -1) {
+    if (UNLIKELY(paths.size() == 1 && paths[0].key == "$" && paths[0].idx == -1)) {
         // Remove union
         if (avro_value_get_type(&cur_value) == AVRO_UNION) {
             avro_value_t branch;
@@ -570,7 +571,7 @@ Status AvroScanner::_extract_field(avro_value_t& input_value, std::vector<AvroPa
     //     key == "$"
     //     idx = 0,1,2,3....
     // }
-    if (avro_value_get_type(&cur_value) == AVRO_ARRAY) {
+    if (UNLIKELY(avro_value_get_type(&cur_value) == AVRO_ARRAY)) {
         if (paths[0].key != "$" || paths[0].idx < 0) {
             auto err_msg = "The avro root type is an array, and you should select a specific array element.";
             return Status::InternalError(err_msg);
@@ -591,7 +592,7 @@ Status AvroScanner::_extract_field(avro_value_t& input_value, std::vector<AvroPa
         // For each iteration, we first determine if the current avro type is union. If it is union,
         // we continue to determine if it is null. If so, we stop the progression and return.
         // If it is not null, the corresponding value is extracted and the progress continues.
-        if (avro_value_get_type(&cur_value) == AVRO_UNION) {
+        if (UNLIKELY(avro_value_get_type(&cur_value) == AVRO_UNION)) {
             avro_value_t branch;
             RETURN_IF_ERROR(_handle_union(cur_value, branch));
             cur_value = branch;
@@ -601,7 +602,7 @@ Status AvroScanner::_extract_field(avro_value_t& input_value, std::vector<AvroPa
             }
         }
 
-        if (avro_value_get_type(&cur_value) != AVRO_RECORD) {
+        if (UNLIKELY(avro_value_get_type(&cur_value) != AVRO_RECORD)) {
             if (i == paths.size() - 1) {
                 break;
             } else {
@@ -610,10 +611,10 @@ Status AvroScanner::_extract_field(avro_value_t& input_value, std::vector<AvroPa
             }
         }
         avro_value_t next_value;
-        if (avro_value_get_by_name(&cur_value, paths[i].key.c_str(), &next_value, nullptr) == 0) {
+        if (LIKELY(avro_value_get_by_name(&cur_value, paths[i].key.c_str(), &next_value, nullptr) == 0)) {
             // For each path, we first need to determine whether the path has an array element operation
             cur_value = next_value;
-            if (paths[i].idx != -1) {
+            if (UNLIKELY(paths[i].idx != -1)) {
                 // In this case, you need to remove the union:
                 // $.event_params[2]
                 // {
@@ -649,7 +650,7 @@ Status AvroScanner::_extract_field(avro_value_t& input_value, std::vector<AvroPa
         }
     }
     // Remove union
-    if (avro_value_get_type(&cur_value) == AVRO_UNION) {
+    if (UNLIKELY(avro_value_get_type(&cur_value) == AVRO_UNION)) {
         avro_value_t branch;
         RETURN_IF_ERROR(_handle_union(cur_value, branch));
         cur_value = branch;
