@@ -107,7 +107,7 @@ using namespace starrocks;
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        std::cout << "Usage: " << argv[0] << " [file]" << " [datarows]"<< std::endl;
+        std::cout << "Usage: " << argv[0] << " [file]" << " [datarows]" << " [batchrows]"<< std::endl;
         exit(1);
     }
     std::string filename = argv[1];
@@ -125,13 +125,6 @@ int main(int argc, char** argv) {
             exit(EXIT_FAILURE);
     }
 
-
-    uint8_t* buffer = (uint8_t*)malloc(BUFFER_SIZE * sizeof(uint8_t));
-    DeferOp bufferDeleter([&] {
-        if (buffer != nullptr) {
-            free(buffer);
-        }
-    });
     std::string data_rows_str = argv[2];
     std::stringstream stream;
     stream << data_rows_str;
@@ -139,34 +132,18 @@ int main(int argc, char** argv) {
     stream >> data_rows;
     std::cout << "data rows: " << data_rows << std::endl;
 
-    // Benchmark 1: File IO
-    auto start = std::chrono::system_clock::now();
+    std::string batch_rows_str = argv[3];
+    std::stringstream stream2;
+    stream2 << batch_rows_str;
+    int64_t batch_rows;
+    stream2 >> batch_rows;
+    std::cout << "batch rows: " << batch_rows << std::endl;
+
 	std::ifstream in(filename.c_str());
 	if(!in) {
 		std::cerr << "Can't open the file." << std::endl;
 		return -1;
 	}
-
-    AvroBenchData bench_data;
-    for (int64_t i=0; i<data_rows; i++) {
-        avro_value_iface_t  *clickbench_class = avro_generic_class_from_schema(schema);
-        avro_value_t clickbench;
-        avro_generic_value_new(clickbench_class, &clickbench);
-        int rval;
-        rval = avro_file_reader_read_value(dbreader, &clickbench);
-        if (rval == 0) {
-            bench_data.put_row(clickbench);
-            /* We no longer need this memory */
-            avro_value_iface_decref(clickbench_class);
-        } else {
-            std::cout << "read avro value error" << std::endl;
-            exit(3);
-        }
-    }
-    auto end = std::chrono::system_clock::now();
-    std::chrono::duration<double> diff = end - start;
-    std::cout << "Have read " << bench_data.get_rows() << std::endl;
-    std::cout << "FIle IO: " << diff.count() << std::endl;
 
     std::vector<TypeDescriptor> types;
     types.emplace_back(TYPE_INT);
@@ -286,29 +263,48 @@ int main(int argc, char** argv) {
     ranges.emplace_back(range);
 
     AvroScannerBench scanner_bench;
+    AvroBenchData bench_data;
     auto scanner = scanner_bench.create_avro_scanner(types, ranges, {"CounterID", "EventDate", "UserID", "EventTime", "WatchID", "JavaEnable", "Title", "GoodEvent", "ClientIP", "RegionID", "CounterClass", "OS", "UserAgent", "URL", "Referer", "IsRefresh", "RefererCategoryID", "RefererRegionID", "URLCategoryID", "URLRegionID", "ResolutionWidth", "ResolutionHeight", "ResolutionDepth", "FlashMajor", "FlashMinor", "FlashMinor2", "NetMajor", "NetMinor", "UserAgentMajor", "UserAgentMinor", "CookieEnable", "JavascriptEnable", "IsMobile", "MobilePhone", "MobilePhoneModel", "Params", "IPNetworkID", "TraficSourceID", "SearchEngineID", "SearchPhrase", "AdvEngineID", "IsArtifical", "WindowClientWidth", "WindowClientHeight", "ClientTimeZone", "ClientEventTime", "SilverlightVersion1", "SilverlightVersion2", "SilverlightVersion3", "SilverlightVersion4", "PageCharset", "CodeVersion", "IsLink", "IsDownload", "IsNotBounce", "FUniqID", "OriginalURL", "HID", "IsOldCounter", "IsEvent", "IsParameter", "DontCountHits", "WithHash", "HitColor", "LocalEventTime", "Age", "Sex", "Income", "Interests", "Robotness", "RemoteIP", "WindowName", "OpenerName", "HistoryLength", "BrowserLanguage", "BrowserCountry", "SocialNetwork", "SocialAction", "HTTPError", "SendTiming", "DNSTiming", "ConnectTiming", "ResponseStartTiming", "ResponseEndTiming", "FetchTiming", "SocialSourceNetworkID", "SocialSourcePage", "ParamPrice", "ParamOrderID", "ParamCurrency", "ParamCurrencyID", "OpenstatServiceName", "OpenstatCampaignID", "OpenstatAdID", "OpenstatSourceID", "UTMSource", "UTMMedium", "UTMCampaign", "UTMContent", "UTMTerm", "FromTag", "HasGCLID", "RefererHash", "URLHash", "CLID"}, bench_data);
     Status st = scanner->open();
     if (!st.ok()) {
         std::cout << "Open scanner error. status: " << st.to_string();
     }
-    
-    // Benchmark 2: Parsing
-    start = std::chrono::system_clock::now();
+
+    auto start = std::chrono::system_clock::now();
+    avro_value_iface_t  *clickbench_class = avro_generic_class_from_schema(schema);
     int64_t parsed_count = 0;
+    for (int64_t i=0; i<data_rows; i++) {
+        avro_value_t clickbench;
+        avro_generic_value_new(clickbench_class, &clickbench);
+        int rval;
+        rval = avro_file_reader_read_value(dbreader, &clickbench);
+        if (rval == 0) {
+            bench_data.put_row(clickbench);
+        } else {
+            std::cout << "read avro value error" << std::endl;
+            exit(3);
+        }
+        while (true) {
+            auto ret = scanner->get_next();
+            if (ret.status().ok()) {
+                parsed_count += ret.value()->num_rows();
+            } else {
+                break;
+            }
+        }
+    }
     while (true) {
         auto ret = scanner->get_next();
-        if (!ret.status().ok()) {
+        if (ret.status().ok()) {
+            parsed_count += ret.value()->num_rows();
+        } else {
             break;
         }
-        parsed_count += ret.value()->num_rows();
     }
-
-    end = std::chrono::system_clock::now();
-    diff = end - start;
+    
+    auto end = std::chrono::system_clock::now();
+    std::chrono::duration<double> diff = end - start;
     std::cout << "Have parsed " << parsed_count << " records" << std::endl;
     std::cout << "Parsing: " << diff.count() << std::endl;
-
-    // if (!st.ok() && !st.is_end_of_file()) {
-    //     std::cout << "Scanner get all error. status: " << st.to_string();
-
+    avro_value_iface_decref(clickbench_class);
 } // namespace starrocks

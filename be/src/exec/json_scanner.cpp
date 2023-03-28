@@ -99,7 +99,7 @@ StatusOr<ChunkPtr> JsonScanner::get_next() {
     }
     if (!status.ok()) {
         if (status.is_end_of_file()) {
-            _cur_file_eof = true;
+            // _cur_file_eof = true;
         } else if (!status.is_time_out()) {
             return status;
         }

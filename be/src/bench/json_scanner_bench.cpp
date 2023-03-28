@@ -97,50 +97,26 @@ using namespace starrocks;
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::cout << "Usage: " << argv[0] << " [file]" << std::endl;
+        std::cout << "Usage: " << argv[0] << " [file]" << " [batchrows]"<< std::endl;
         exit(1);
     }
-    std::string filename = argv[1];
-
-    /*
-     * 1. 构建types
-     * 2. ranges
-     * 3. colnames
-     * 4. scanner open
-     * 5. scanner next
-     * 6. 计算时间j
-     * 7. 新的问题：
-     *    1. 我们希望把IO和parsing分开
-     *    2. 每次jsonscanner只解析一条数据
-     */
 
     uint8_t* buffer = (uint8_t*)malloc(BUFFER_SIZE * sizeof(uint8_t));
-    DeferOp bufferDeleter([&] {
-        if (buffer != nullptr) {
-            free(buffer);
-        }
-    });
-    // Benchmark 1: File IO
-    auto start = std::chrono::system_clock::now();
     uint8_t* cur_pos = buffer;
+
+    std::string filename = argv[1];
+    std::string batch_rows_str = argv[2];
+    std::stringstream stream2;
+    stream2 << batch_rows_str;
+    int64_t batch_rows;
+    stream2 >> batch_rows;
+    std::cout << "batch rows: " << batch_rows << std::endl;
+
 	std::ifstream in(filename.c_str());
 	if(!in) {
 		std::cerr << "Can't open the file." << std::endl;
 		return -1;
 	}
-    std::string line;
-    int64_t count = 0;
-    BenchData bench_data;
-	while(getline(in, line)) {
-        memcpy(cur_pos, line.c_str(), line.size());
-        bench_data.put_row(cur_pos, line.size());
-        cur_pos = cur_pos + line.size();
-        count++;
-    }
-    auto end = std::chrono::system_clock::now();
-    std::chrono::duration<double> diff = end - start;
-    std::cout << "Have read " << bench_data.get_rows() << std::endl;
-    std::cout << "FIle IO: " << diff.count() << std::endl;
     std::vector<TypeDescriptor> types;
     types.emplace_back(TYPE_INT);
     types.emplace_back(TYPE_DATE);
@@ -259,6 +235,7 @@ int main(int argc, char** argv) {
     ranges.emplace_back(range);
 
     JsonScannerBench scanner_bench;
+    BenchData bench_data;
     auto scanner = scanner_bench.create_json_scanner(types, ranges, {"CounterID", "EventDate", "UserID", "EventTime", "WatchID", "JavaEnable", "Title", "GoodEvent", "ClientIP", "RegionID", "CounterClass", "OS", "UserAgent", "URL", "Referer", "IsRefresh", "RefererCategoryID", "RefererRegionID", "URLCategoryID", "URLRegionID", "ResolutionWidth", "ResolutionHeight", "ResolutionDepth", "FlashMajor", "FlashMinor", "FlashMinor2", "NetMajor", "NetMinor", "UserAgentMajor", "UserAgentMinor", "CookieEnable", "JavascriptEnable", "IsMobile", "MobilePhone", "MobilePhoneModel", "Params", "IPNetworkID", "TraficSourceID", "SearchEngineID", "SearchPhrase", "AdvEngineID", "IsArtifical", "WindowClientWidth", "WindowClientHeight", "ClientTimeZone", "ClientEventTime", "SilverlightVersion1", "SilverlightVersion2", "SilverlightVersion3", "SilverlightVersion4", "PageCharset", "CodeVersion", "IsLink", "IsDownload", "IsNotBounce", "FUniqID", "OriginalURL", "HID", "IsOldCounter", "IsEvent", "IsParameter", "DontCountHits", "WithHash", "HitColor", "LocalEventTime", "Age", "Sex", "Income", "Interests", "Robotness", "RemoteIP", "WindowName", "OpenerName", "HistoryLength", "BrowserLanguage", "BrowserCountry", "SocialNetwork", "SocialAction", "HTTPError", "SendTiming", "DNSTiming", "ConnectTiming", "ResponseStartTiming", "ResponseEndTiming", "FetchTiming", "SocialSourceNetworkID", "SocialSourcePage", "ParamPrice", "ParamOrderID", "ParamCurrency", "ParamCurrencyID", "OpenstatServiceName", "OpenstatCampaignID", "OpenstatAdID", "OpenstatSourceID", "UTMSource", "UTMMedium", "UTMCampaign", "UTMContent", "UTMTerm", "FromTag", "HasGCLID", "RefererHash", "URLHash", "CLID"}, bench_data);
     Status st = scanner->open();
     if (!st.ok()) {
@@ -266,22 +243,43 @@ int main(int argc, char** argv) {
     }
     
     // Benchmark 2: Parsing
-    start = std::chrono::system_clock::now();
+    auto start = std::chrono::system_clock::now();
     int64_t parsed_count = 0;
-    while (true) {
-        auto ret = scanner->get_next();
-        if (!ret.status().ok()) {
-            break;
+
+    std::string line;
+    int64_t count = 0;
+	while(getline(in, line)) {
+        memcpy(cur_pos, line.c_str(), line.size());
+        bench_data.put_row(cur_pos, line.size());
+        cur_pos = cur_pos + line.size();
+        count++;
+        if ((count % batch_rows) == 0) {
+            while (true) {
+                auto ret = scanner->get_next();
+                if (ret.status().ok()) {
+                    parsed_count += ret.value()->num_rows();
+                } else {
+                    break;
+                }
+            }
         }
-        parsed_count += ret.value()->num_rows();
     }
 
-    end = std::chrono::system_clock::now();
-    diff = end - start;
+    while (true) {
+        auto ret = scanner->get_next();
+        if (ret.status().ok()) {
+            parsed_count += ret.value()->num_rows();
+        } else {
+            break;
+        }
+    }
+
+    auto end = std::chrono::system_clock::now();
+    std::chrono::duration<double> diff = end - start;
+    if (buffer != nullptr) {
+        free(buffer);
+    }
     std::cout << "Have parsed " << parsed_count << " records" << std::endl;
     std::cout << "Parsing: " << diff.count() << std::endl;
-
-    // if (!st.ok() && !st.is_end_of_file()) {
-    //     std::cout << "Scanner get all error. status: " << st.to_string();
 
 } // namespace starrocks
