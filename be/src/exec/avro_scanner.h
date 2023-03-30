@@ -87,6 +87,16 @@ public:
     static std::string generate_jsonpaths(std::vector<std::string>& col_names);
     static std::string preprocess_jsonpaths(std::string jsonpath);
 
+    struct PreviousParsedItem {
+        PreviousParsedItem(const std::string_view& key) : key(key), column_index(-1) {}
+        PreviousParsedItem(const std::string_view& key, int column_index, const TypeDescriptor& type)
+                : key(key), type(type), column_index(column_index) {}
+
+        std::string key;
+        TypeDescriptor type;
+        int column_index;
+    };
+
 private:
     Status _construct_avro_types();
     Status _construct_cast_exprs();
@@ -102,6 +112,7 @@ private:
     Status _handle_union(avro_value_t input_value, avro_value_t& branch);
     Status _get_array_element(avro_value_t* cur_value, size_t idx, avro_value_t* element);
     std::string _preprocess_jsonpaths(std::string jsonpath);
+    Status _construct_row_without_jsonpath(avro_value_t avro_value, Chunk* chunk);
 
     const TBrokerScanRange& _scan_range;
     serdes_t* _serdes;
@@ -113,6 +124,10 @@ private:
     std::vector<TypeDescriptor> _avro_types;
     std::vector<Expr*> _cast_exprs;
     ObjectPool _pool;
+    std::shared_ptr<SequentialFile> _file;
+    std::unordered_map<std::string_view, SlotDescriptor*> _slot_desc_dict;
+    std::vector<PreviousParsedItem> _prev_parsed_position;
+    std::vector<bool> _found_columns;
 
 #if BE_TEST
     avro_file_reader_t _dbreader;
