@@ -313,8 +313,8 @@ Status AvroScanner::_parse_avro(Chunk* chunk, std::shared_ptr<SequentialFile> fi
 #endif
         size_t chunk_row_num = chunk->num_rows();
         
-        // auto st = _construct_row(avro_value, chunk);
-        auto st = _construct_row_without_jsonpath(avro_value, chunk);
+        auto st = _construct_row(avro_value, chunk);
+        // auto st = _construct_row_without_jsonpath(avro_value, chunk);
         if (!st.ok()) {
             if (_counter->num_rows_filtered++ < MAX_ERROR_LINES_IN_FILE) {
                 // We would continue to construct row even if error is returned,
