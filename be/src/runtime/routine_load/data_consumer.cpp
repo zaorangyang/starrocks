@@ -297,7 +297,9 @@ Status KafkaDataConsumer::get_partition_offset(std::vector<int32_t>* partition_i
         int64_t latest_offset;
         auto left_ms = timeout - watch.elapsed_time() / 1000 / 1000;
         if (left_ms <= 0) {
-            return Status::TimedOut("get kafka info timeout");
+            auto err_msg =
+                    "no enough time to get the kafka partition offset. topic: " + _topic + " partition: " << p_id;
+            return Status::TimedOut(err_msg);
         }
         RdKafka::ErrorCode err =
                 _k_consumer->query_watermark_offsets(_topic, p_id, &beginning_offset, &latest_offset, left_ms);
