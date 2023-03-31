@@ -217,6 +217,7 @@ Status AvroScanner::open() {
         }
         _slot_desc_dict.emplace(desc->col_name(), desc);
     }
+    _data_idx_to_slotId.assign(_src_slot_descriptors.size(), SlotInfo());
     return Status::OK();
 }
 
@@ -383,28 +384,37 @@ Status AvroScanner::_construct_row_without_jsonpath(avro_value_t avro_value, Chu
         auto err_msg = "Cannot get record size: " + std::string(avro_strerror());
         return Status::InternalError(err_msg);
     }
-
     for (size_t i = 0; i < element_count; i++) {
         avro_value_t element_value;
         const char* field_name;
-                if (UNLIKELY(avro_value_get_by_index(&avro_value, i, &element_value, &field_name) != 0)) {
+        if (UNLIKELY(avro_value_get_by_index(&avro_value, i, &element_value, &field_name) != 0)) {
             auto err_msg = "Cannot get value by index: " + std::string(avro_strerror());
             return Status::InternalError(err_msg);
         }
-        std::string_view key(field_name);
-            // look up key in the slot dict.
-        auto itr = _slot_desc_dict.find(key);
-        if (itr == _slot_desc_dict.end()) {
-            _found_columns[i] = true;
+        SlotInfo& slot_info = _data_idx_to_slotId[i];
+        if (slot_info.id_ > -1) {
+            int column_index = chunk->get_index_by_slot_id(slot_info.id_);
+            _found_columns[column_index] = true;
+        } else if (slot_info.id_ == -1) {
             continue;
+        } else {
+            std::string_view key(field_name);
+            // look up key in the slot dict.
+            auto itr = _slot_desc_dict.find(key);
+            if (itr == _slot_desc_dict.end()) {
+                slot_info.id_ = -1;
+                continue;
+            }
+            auto slot_desc = itr->second;
+            slot_info.id_ = slot_desc->id();
+            slot_info.type_ = slot_desc->type();
+            int column_index = chunk->get_index_by_slot_id(slot_info.id_);
+            _found_columns[column_index] = true;
         }
-        auto slot_desc = itr->second;
 
-        auto column = chunk->get_column_by_slot_id(slot_desc->id());
-        const auto& col_name = slot_desc->col_name();
-
+        auto column = chunk->get_column_by_slot_id(slot_info.id_);
         // construct column with value.
-        RETURN_IF_ERROR(_construct_column(element_value, column.get(), slot_desc->type(), col_name));
+        RETURN_IF_ERROR(_construct_column(element_value, column.get(), slot_info.type_, column->get_name()));
     }
 
     for (int i=0; i<_found_columns.size(); i++) {

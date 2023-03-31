@@ -87,14 +87,23 @@ public:
     static std::string generate_jsonpaths(std::vector<std::string>& col_names);
     static std::string preprocess_jsonpaths(std::string jsonpath);
 
-    struct PreviousParsedItem {
-        PreviousParsedItem(const std::string_view& key) : key(key), column_index(-1) {}
-        PreviousParsedItem(const std::string_view& key, int column_index, const TypeDescriptor& type)
-                : key(key), type(type), column_index(column_index) {}
+    // struct SlotInfo {
+    //     PreviousParsedItem(const std::string_view& key) : key(key), column_index(-1) {}
+    //     PreviousParsedItem(const std::string_view& key, int column_index, const TypeDescriptor& type)
+    //             : key(key), type(type), column_index(column_index) {}
 
-        std::string key;
-        TypeDescriptor type;
-        int column_index;
+    //     std::string key;
+    //     TypeDescriptor type;
+    //     int column_index;
+    // };
+
+
+    struct SlotInfo {
+        SlotInfo() : id_(-2) {
+        }
+
+        SlotId id_;
+        TypeDescriptor type_;
     };
 
 private:
@@ -126,8 +135,9 @@ private:
     ObjectPool _pool;
     std::shared_ptr<SequentialFile> _file;
     std::unordered_map<std::string_view, SlotDescriptor*> _slot_desc_dict;
-    std::vector<PreviousParsedItem> _prev_parsed_position;
+    // std::vector<PreviousParsedItem> _prev_parsed_position;
     std::vector<bool> _found_columns;
+    std::vector<SlotInfo> _data_idx_to_slotId;
 
 #if BE_TEST
     avro_file_reader_t _dbreader;
