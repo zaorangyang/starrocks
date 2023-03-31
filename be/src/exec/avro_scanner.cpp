@@ -313,8 +313,8 @@ Status AvroScanner::_parse_avro(Chunk* chunk, std::shared_ptr<SequentialFile> fi
 #endif
         size_t chunk_row_num = chunk->num_rows();
         
-        auto st = _construct_row(avro_value, chunk);
-        // auto st = _construct_row_without_jsonpath(avro_value, chunk);
+        // auto st = _construct_row(avro_value, chunk);
+        auto st = _construct_row_without_jsonpath(avro_value, chunk);
         if (!st.ok()) {
             if (_counter->num_rows_filtered++ < MAX_ERROR_LINES_IN_FILE) {
                 // We would continue to construct row even if error is returned,
@@ -331,78 +331,163 @@ Status AvroScanner::_parse_avro(Chunk* chunk, std::shared_ptr<SequentialFile> fi
     return Status::OK();
 }
 
+// Status AvroScanner::_construct_row_without_jsonpath(avro_value_t avro_value, Chunk* chunk) {
+//     std::unordered_map<std::string_view, SlotDescriptor*> slot_desc_dict(_slot_desc_dict);
+
+//     size_t element_count;
+//     if (UNLIKELY(avro_value_get_size(&avro_value, &element_count) != 0)) {
+//         auto err_msg = "Cannot get record size: " + std::string(avro_strerror());
+//         return Status::InternalError(err_msg);
+//     }
+
+//     for (size_t i = 0; i < element_count; i++) {
+//         avro_value_t element_value;
+//         const char* field_name;
+//                 if (UNLIKELY(avro_value_get_by_index(&avro_value, i, &element_value, &field_name) != 0)) {
+//             auto err_msg = "Cannot get value by index: " + std::string(avro_strerror());
+//             return Status::InternalError(err_msg);
+//         }
+//         std::string_view key(field_name);
+//             // look up key in the slot dict.
+//         auto itr = slot_desc_dict.find(key);
+//         if (itr == slot_desc_dict.end()) {
+//             continue;
+//         }
+//         auto slot_desc = itr->second;
+
+//         auto column = chunk->get_column_by_slot_id(slot_desc->id());
+//         const auto& col_name = slot_desc->col_name();
+
+//         // construct column with value.
+//         RETURN_IF_ERROR(_construct_column(element_value, column.get(), slot_desc->type(), col_name));
+
+//         // delete the written column.
+//         slot_desc_dict.erase(key);
+//     }
+
+//     // append null to the column without data.
+//     for (auto& pair : slot_desc_dict) {
+//         auto& slot_desc = pair.second;
+
+//         auto column = chunk->get_column_by_slot_id(slot_desc->id());
+//         // Column name not found, fill column with null.
+//         column->append_nulls(1);
+//     }
+//     return Status::OK();
+// }
+
 Status AvroScanner::_construct_row_without_jsonpath(avro_value_t avro_value, Chunk* chunk) {
     _found_columns.assign(chunk->num_columns(), false);
-
     size_t element_count;
     if (UNLIKELY(avro_value_get_size(&avro_value, &element_count) != 0)) {
         auto err_msg = "Cannot get record size: " + std::string(avro_strerror());
         return Status::InternalError(err_msg);
     }
-    uint32_t key_index = 0;
-	for (size_t i = 0; i < element_count; i++) {
-		avro_value_t element_value;
+
+    for (size_t i = 0; i < element_count; i++) {
+        avro_value_t element_value;
         const char* field_name;
-		if (UNLIKELY(avro_value_get_by_index(&avro_value, i, &element_value, &field_name) != 0)) {
+                if (UNLIKELY(avro_value_get_by_index(&avro_value, i, &element_value, &field_name) != 0)) {
             auto err_msg = "Cannot get value by index: " + std::string(avro_strerror());
-            return Status::InternalError(err_msg);        
+            return Status::InternalError(err_msg);
         }
-        int column_index;
         std::string_view key(field_name);
-
-        if (LIKELY(_prev_parsed_position.size() > key_index && _prev_parsed_position[key_index].key == key)) {
-            // obtain column_index from previous parsed position
-            column_index = _prev_parsed_position[key_index].column_index;
-            if (column_index < 0) {
-                // column_index < 0 means key is not in the slot dict, and we will skip this field
-                key_index++;
-                continue;
-            }
-        } else {
             // look up key in the slot dict.
-            auto itr = _slot_desc_dict.find(key);
-            if (itr == _slot_desc_dict.end()) {
-                // parsed key of the json object is not in the slot dict, and we will skip this field
-                if (_prev_parsed_position.size() <= key_index) {
-                    _prev_parsed_position.emplace_back(key);
-                } else {
-                    _prev_parsed_position[key_index].key = key;
-                    _prev_parsed_position[key_index].column_index = -1;
-                }
-                key_index++;
-                continue;
-            }
-
-            auto slot_desc = itr->second;
-
-            // update the prev parsed position
-            column_index = chunk->get_index_by_slot_id(slot_desc->id());
-            if (_prev_parsed_position.size() <= key_index) {
-                _prev_parsed_position.emplace_back(key, column_index, slot_desc->type());
-            } else {
-                _prev_parsed_position[key_index].key = key;
-                _prev_parsed_position[key_index].column_index = column_index;
-                _prev_parsed_position[key_index].type = slot_desc->type();
-            }
+        auto itr = _slot_desc_dict.find(key);
+        if (itr == _slot_desc_dict.end()) {
+            _found_columns[i] = true;
+            continue;
         }
+        auto slot_desc = itr->second;
 
-        DCHECK(column_index >= 0);
-        _found_columns[column_index] = true;
-        auto& column = chunk->get_column_by_index(column_index);
+        auto column = chunk->get_column_by_slot_id(slot_desc->id());
+        const auto& col_name = slot_desc->col_name();
+
         // construct column with value.
-        RETURN_IF_ERROR(_construct_column(element_value, column.get(), _prev_parsed_position[key_index].type, column->get_name()));
-	}
+        RETURN_IF_ERROR(_construct_column(element_value, column.get(), slot_desc->type(), col_name));
+    }
 
-    // append null to the column without data.
     for (int i=0; i<_found_columns.size(); i++) {
         if (!_found_columns[i]) {
             auto& column = chunk->get_column_by_index(i);
-            // Column name not found, fill column with null.
             column->append_nulls(1);
         }
     }
     return Status::OK();
 }
+
+// Status AvroScanner::_construct_row_without_jsonpath(avro_value_t avro_value, Chunk* chunk) {
+//     _found_columns.assign(chunk->num_columns(), false);
+
+//     size_t element_count;
+//     if (UNLIKELY(avro_value_get_size(&avro_value, &element_count) != 0)) {
+//         auto err_msg = "Cannot get record size: " + std::string(avro_strerror());
+//         return Status::InternalError(err_msg);
+//     }
+//     uint32_t key_index = 0;
+// 	for (size_t i = 0; i < element_count; i++) {
+// 		avro_value_t element_value;
+//         const char* field_name;
+// 		if (UNLIKELY(avro_value_get_by_index(&avro_value, i, &element_value, &field_name) != 0)) {
+//             auto err_msg = "Cannot get value by index: " + std::string(avro_strerror());
+//             return Status::InternalError(err_msg);        
+//         }
+//         int column_index;
+//         std::string_view key(field_name);
+
+//         if (LIKELY(_prev_parsed_position.size() > key_index && _prev_parsed_position[key_index].key == key)) {
+//             // obtain column_index from previous parsed position
+//             column_index = _prev_parsed_position[key_index].column_index;
+//             if (column_index < 0) {
+//                 // column_index < 0 means key is not in the slot dict, and we will skip this field
+//                 key_index++;
+//                 continue;
+//             }
+//         } else {
+//             // look up key in the slot dict.
+//             auto itr = _slot_desc_dict.find(key);
+//             if (itr == _slot_desc_dict.end()) {
+//                 // parsed key of the json object is not in the slot dict, and we will skip this field
+//                 if (_prev_parsed_position.size() <= key_index) {
+//                     _prev_parsed_position.emplace_back(key);
+//                 } else {
+//                     _prev_parsed_position[key_index].key = key;
+//                     _prev_parsed_position[key_index].column_index = -1;
+//                 }
+//                 key_index++;
+//                 continue;
+//             }
+
+//             auto slot_desc = itr->second;
+
+//             // update the prev parsed position
+//             column_index = chunk->get_index_by_slot_id(slot_desc->id());
+//             if (_prev_parsed_position.size() <= key_index) {
+//                 _prev_parsed_position.emplace_back(key, column_index, slot_desc->type());
+//             } else {
+//                 _prev_parsed_position[key_index].key = key;
+//                 _prev_parsed_position[key_index].column_index = column_index;
+//                 _prev_parsed_position[key_index].type = slot_desc->type();
+//             }
+//         }
+
+//         DCHECK(column_index >= 0);
+//         _found_columns[column_index] = true;
+//         auto& column = chunk->get_column_by_index(column_index);
+//         // construct column with value.
+//         RETURN_IF_ERROR(_construct_column(element_value, column.get(), _prev_parsed_position[key_index].type, column->get_name()));
+// 	}
+
+//     // append null to the column without data.
+//     for (int i=0; i<_found_columns.size(); i++) {
+//         if (!_found_columns[i]) {
+//             auto& column = chunk->get_column_by_index(i);
+//             // Column name not found, fill column with null.
+//             column->append_nulls(1);
+//         }
+//     }
+//     return Status::OK();
+// }
 
 StatusOr<ChunkPtr> AvroScanner::get_next() {
     SCOPED_RAW_TIMER(&_counter->total_ns);
