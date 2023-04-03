@@ -23,7 +23,7 @@
 namespace starrocks {
 
 static Status add_column_with_numeric_value(BinaryColumn* column, const TypeDescriptor& type_desc,
-                                            const std::string& name, avro_value_t value) {
+                                            const std::string& name, const avro_value_t& value) {
     switch (avro_value_get_type(&value)) {
     case AVRO_INT32: {
         int in;
@@ -104,13 +104,13 @@ static Status add_column_with_numeric_value(BinaryColumn* column, const TypeDesc
 }
 
 static Status add_column_with_string_value(BinaryColumn* column, const TypeDescriptor& type_desc,
-                                           const std::string& name, avro_value_t value) {
+                                           const std::string& name, const avro_value_t& value) {
     switch (avro_value_get_type(&value)) {
     case AVRO_ENUM: {
         avro_schema_t enum_schema;
         int symbol_value;
         const char* symbol_name;
-        if (avro_value_get_enum(&value, &symbol_value) != 0) {
+        if (UNLIKELY(avro_value_get_enum(&value, &symbol_value) != 0)) {
             auto err_msg = strings::Substitute("Get enum value error. column=$0", name);
             return Status::InvalidArgument(err_msg);
         }
@@ -124,12 +124,12 @@ static Status add_column_with_string_value(BinaryColumn* column, const TypeDescr
     case AVRO_STRING: {
         const char* in;
         size_t size;
-        if (avro_value_get_string(&value, &in, &size) != 0) {
+        if (UNLIKELY(avro_value_get_string(&value, &in, &size) != 0)) {
             auto err_msg = strings::Substitute("Get string value error. column=$0", name);
             return Status::InvalidArgument(err_msg);
         }
         --size;
-        if (type_desc.len < size) {
+        if (UNLIKELY(type_desc.len < size)) {
             auto err_msg = strings::Substitute("Value length is beyond the capacity. column=$0, capacity=$1", name,
                                                type_desc.len);
             return Status::InvalidArgument(err_msg);
@@ -142,12 +142,12 @@ static Status add_column_with_string_value(BinaryColumn* column, const TypeDescr
     case AVRO_FIXED: {
         const char* in;
         size_t size;
-        if (avro_value_get_fixed(&value, (const void**)&in, &size) != 0) {
+        if (UNLIKELY(avro_value_get_fixed(&value, (const void**)&in, &size) != 0)) {
             auto err_msg = strings::Substitute("Get fixed value error. column=$0", name);
             return Status::InvalidArgument(err_msg);
         }
 
-        if (type_desc.len < size) {
+        if (UNLIKELY(type_desc.len < size)) {
             auto err_msg = strings::Substitute("Value length is beyond the capacity. column=$0, capacity=$1", name,
                                                type_desc.len);
             return Status::InvalidArgument(err_msg);
@@ -160,12 +160,12 @@ static Status add_column_with_string_value(BinaryColumn* column, const TypeDescr
     case AVRO_BYTES: {
         const char* in;
         size_t size;
-        if (avro_value_get_bytes(&value, (const void**)&in, &size) != 0) {
+        if (UNLIKELY(avro_value_get_bytes(&value, (const void**)&in, &size) != 0)) {
             auto err_msg = strings::Substitute("Get bytes value error. column=$0", name);
             return Status::InvalidArgument(err_msg);
         }
 
-        if (type_desc.len < size) {
+        if (UNLIKELY(type_desc.len < size)) {
             auto err_msg = strings::Substitute("Value length is beyond the capacity. column=$0, capacity=$1", name,
                                                type_desc.len);
             return Status::InvalidArgument(err_msg);
@@ -184,7 +184,7 @@ static Status add_column_with_string_value(BinaryColumn* column, const TypeDescr
 }
 
 static Status add_column_with_boolean_value(BinaryColumn* column, const TypeDescriptor& type_desc,
-                                            const std::string& name, avro_value_t value) {
+                                            const std::string& name, const avro_value_t& value) {
     int in;
     if (avro_value_get_boolean(&value, &in) != 0) {
         auto err_msg = strings::Substitute("Get boolean value error. column=$0", name);
@@ -199,7 +199,7 @@ static Status add_column_with_boolean_value(BinaryColumn* column, const TypeDesc
 }
 
 static Status add_column_with_array_object_value(BinaryColumn* column, const TypeDescriptor& type_desc,
-                                                 const std::string& name, avro_value_t value) {
+                                                 const std::string& name, const avro_value_t& value) {
     char* as_json;
     if (avro_value_to_json(&value, 1, &as_json)) {
         LOG(ERROR) << "avro to json failed: %s" << avro_strerror();
@@ -210,7 +210,7 @@ static Status add_column_with_array_object_value(BinaryColumn* column, const Typ
     return Status::OK();
 }
 
-Status add_binary_column(Column* column, const TypeDescriptor& type_desc, const std::string& name, avro_value_t value) {
+Status add_binary_column(Column* column, const TypeDescriptor& type_desc, const std::string& name, const avro_value_t& value) {
     auto binary_column = down_cast<BinaryColumn*>(column);
 
     switch (avro_value_get_type(&value)) {
@@ -248,7 +248,7 @@ Status add_binary_column(Column* column, const TypeDescriptor& type_desc, const 
 }
 
 Status add_native_json_column(Column* column, const TypeDescriptor& type_desc, const std::string& name,
-                              avro_value_t value) {
+                              const avro_value_t& value) {
     auto json_column = down_cast<JsonColumn*>(column);
     char* as_json;
     if (avro_value_to_json(&value, 1, &as_json)) {

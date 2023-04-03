@@ -29,9 +29,9 @@ extern "C" {
 
 namespace starrocks {
 
-Status add_binary_column(Column* column, const TypeDescriptor& type_desc, const std::string& name, avro_value_t value);
+Status add_binary_column(Column* column, const TypeDescriptor& type_desc, const std::string& name, const avro_value_t& value);
 
 Status add_native_json_column(Column* column, const TypeDescriptor& type_desc, const std::string& name,
-                              avro_value_t value);
+                              const avro_value_t& value);
 
 } // namespace starrocks

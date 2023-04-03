@@ -25,7 +25,7 @@ namespace starrocks {
 
 template <typename T>
 static Status add_adaptive_nullable_numeric_column(Column* column, const TypeDescriptor& type_desc,
-                                                   const std::string& name, avro_value_t value) {
+                                                   const std::string& name, const avro_value_t& value) {
     auto nullable_column = down_cast<AdaptiveNullableColumn*>(column);
     if (avro_value_get_type(&value) == AVRO_NULL) {
         column->append_nulls(1);
@@ -38,23 +38,23 @@ static Status add_adaptive_nullable_numeric_column(Column* column, const TypeDes
 }
 
 template Status add_adaptive_nullable_numeric_column<int64_t>(Column* column, const TypeDescriptor& type_desc,
-                                                              const std::string& name, avro_value_t value);
+                                                              const std::string& name, const avro_value_t& value);
 template Status add_adaptive_nullable_numeric_column<int32_t>(Column* column, const TypeDescriptor& type_desc,
-                                                              const std::string& name, avro_value_t value);
+                                                              const std::string& name, const avro_value_t& value);
 template Status add_adaptive_nullable_numeric_column<int16_t>(Column* column, const TypeDescriptor& type_desc,
-                                                              const std::string& name, avro_value_t value);
+                                                              const std::string& name, const avro_value_t& value);
 template Status add_adaptive_nullable_numeric_column<int8_t>(Column* column, const TypeDescriptor& type_desc,
-                                                             const std::string& name, avro_value_t value);
+                                                             const std::string& name, const avro_value_t& value);
 template Status add_adaptive_nullable_numeric_column<uint8_t>(Column* column, const TypeDescriptor& type_desc,
-                                                              const std::string& name, avro_value_t value);
+                                                              const std::string& name, const avro_value_t& value);
 template Status add_adaptive_nullable_numeric_column<double>(Column* column, const TypeDescriptor& type_desc,
-                                                             const std::string& name, avro_value_t value);
+                                                             const std::string& name, const avro_value_t& value);
 template Status add_adaptive_nullable_numeric_column<float>(Column* column, const TypeDescriptor& type_desc,
-                                                            const std::string& name, avro_value_t value);
+                                                            const std::string& name, const avro_value_t& value);
 
 template <typename T>
 static Status add_nullable_numeric_column(Column* column, const TypeDescriptor& type_desc, const std::string& name,
-                                          avro_value_t value) {
+                                          const avro_value_t& value) {
     auto nullable_column = down_cast<NullableColumn*>(column);
 
     auto& null_column = nullable_column->null_column();
@@ -72,7 +72,7 @@ static Status add_nullable_numeric_column(Column* column, const TypeDescriptor& 
 }
 
 static Status add_adpative_nullable_binary_column(Column* column, const TypeDescriptor& type_desc,
-                                                  const std::string& name, avro_value_t value) {
+                                                  const std::string& name, const avro_value_t& value) {
     auto nullable_column = down_cast<AdaptiveNullableColumn*>(column);
     if (avro_value_get_type(&value) == AVRO_NULL) {
         nullable_column->append_nulls(1);
@@ -88,7 +88,7 @@ static Status add_adpative_nullable_binary_column(Column* column, const TypeDesc
 }
 
 static Status add_nullable_binary_column(Column* column, const TypeDescriptor& type_desc, const std::string& name,
-                                         avro_value_t value) {
+                                         const avro_value_t& value) {
     auto nullable_column = down_cast<NullableColumn*>(column);
 
     auto& null_column = nullable_column->null_column();
@@ -103,7 +103,7 @@ static Status add_nullable_binary_column(Column* column, const TypeDescriptor& t
 }
 
 static Status add_adpative_nullable_native_json_column(Column* column, const TypeDescriptor& type_desc,
-                                                       const std::string& name, avro_value_t value) {
+                                                       const std::string& name, const avro_value_t& value) {
     auto nullable_column = down_cast<AdaptiveNullableColumn*>(column);
     if (avro_value_get_type(&value) == AVRO_NULL) {
         nullable_column->append_nulls(1);
@@ -119,7 +119,7 @@ static Status add_adpative_nullable_native_json_column(Column* column, const Typ
 }
 
 static Status add_nullable_native_json_column(Column* column, const TypeDescriptor& type_desc, const std::string& name,
-                                              avro_value_t value) {
+                                              const avro_value_t& value) {
     auto nullable_column = down_cast<NullableColumn*>(column);
 
     auto& null_column = nullable_column->null_column();
@@ -135,7 +135,7 @@ static Status add_nullable_native_json_column(Column* column, const TypeDescript
 }
 
 static Status add_nullable_column(Column* column, const TypeDescriptor& type_desc, const std::string& name,
-                                  avro_value_t value) {
+                                  const avro_value_t& value) {
     switch (type_desc.type) {
     case TYPE_BOOLEAN:
         return add_nullable_numeric_column<int8_t>(column, type_desc, name, value);
@@ -193,7 +193,7 @@ static Status add_nullable_column(Column* column, const TypeDescriptor& type_des
 }
 
 static Status add_adpative_nullable_column(Column* column, const TypeDescriptor& type_desc, const std::string& name,
-                                           avro_value_t value) {
+                                           const avro_value_t& value) {
     switch (type_desc.type) {
     case TYPE_BOOLEAN:
         return add_adaptive_nullable_numeric_column<uint8_t>(column, type_desc, name, value);
@@ -250,7 +250,7 @@ static Status add_adpative_nullable_column(Column* column, const TypeDescriptor&
 }
 
 Status add_adaptive_nullable_column(Column* column, const TypeDescriptor& type_desc, const std::string& name,
-                                    avro_value_t value, bool invalid_as_null) {
+                                    const avro_value_t& value, bool invalid_as_null) {
     if (avro_value_get_type(&value) == AVRO_NULL) {
         column->append_nulls(1);
         return Status::OK();
@@ -264,7 +264,7 @@ Status add_adaptive_nullable_column(Column* column, const TypeDescriptor& type_d
     return st;
 }
 
-Status add_nullable_column(Column* column, const TypeDescriptor& type_desc, const std::string& name, avro_value_t value,
+Status add_nullable_column(Column* column, const TypeDescriptor& type_desc, const std::string& name, const avro_value_t& value,
                            bool invalid_as_null) {
     if (avro_value_get_type(&value) == AVRO_NULL) {
         column->append_nulls(1);

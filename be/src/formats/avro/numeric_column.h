@@ -31,6 +31,6 @@ extern "C" {
 namespace starrocks {
 
 template <typename T>
-Status add_numeric_column(Column* column, const TypeDescriptor& type_desc, const std::string& name, avro_value_t value);
+Status add_numeric_column(Column* column, const TypeDescriptor& type_desc, const std::string& name, const avro_value_t& value);
 
 } // namespace starrocks

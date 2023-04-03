@@ -84,26 +84,12 @@ public:
     // Close this scanner
     void close() override;
 
-    static std::string generate_jsonpaths(std::vector<std::string>& col_names);
     static std::string preprocess_jsonpaths(std::string jsonpath);
-
-    // struct SlotInfo {
-    //     PreviousParsedItem(const std::string_view& key) : key(key), column_index(-1) {}
-    //     PreviousParsedItem(const std::string_view& key, int column_index, const TypeDescriptor& type)
-    //             : key(key), type(type), column_index(column_index) {}
-
-    //     std::string key;
-    //     TypeDescriptor type;
-    //     int column_index;
-    // };
-
-
     struct SlotInfo {
-        SlotInfo() : id_(-2) {
-        }
-
+        SlotInfo() : id_(-2) {}
         SlotId id_;
         TypeDescriptor type_;
+        std::string key_;
     };
 
 private:
@@ -115,7 +101,7 @@ private:
     void _report_error(const std::string& line, const std::string& err_msg);
     Status _construct_row(avro_value_t avro_value, Chunk* chunk);
     void _materialize_src_chunk_adaptive_nullable_column(ChunkPtr& chunk);
-    Status _construct_column(avro_value_t input_value, Column* column, const TypeDescriptor& type_desc,
+    Status _construct_column(const avro_value_t& input_value, Column* column, const TypeDescriptor& type_desc,
                              const std::string& col_name);
     Status _extract_field(avro_value_t& input_value, std::vector<AvroPath> paths, avro_value_t& output_value);
     Status _handle_union(avro_value_t input_value, avro_value_t& branch);
@@ -137,7 +123,8 @@ private:
     std::unordered_map<std::string_view, SlotDescriptor*> _slot_desc_dict;
     // std::vector<PreviousParsedItem> _prev_parsed_position;
     std::vector<bool> _found_columns;
-    std::vector<SlotInfo> _data_idx_to_slotId;
+    std::vector<SlotInfo> _data_idx_to_slot;
+    bool _init_data_idx_to_slot_once;
 
 #if BE_TEST
     avro_file_reader_t _dbreader;
