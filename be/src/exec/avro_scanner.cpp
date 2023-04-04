@@ -307,7 +307,7 @@ Status AvroScanner::_parse_avro(Chunk* chunk, std::shared_ptr<SequentialFile> fi
     return Status::OK();
 }
 
-Status AvroScanner::_construct_row_without_jsonpath(avro_value_t avro_value, Chunk* chunk) {
+Status AvroScanner::_construct_row_without_jsonpath(const avro_value_t& avro_value, Chunk* chunk) {
     _found_columns.assign(chunk->num_columns(), false);
     size_t element_count;
     if (UNLIKELY(avro_value_get_size(&avro_value, &element_count) != 0)) {

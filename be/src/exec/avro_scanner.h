@@ -107,7 +107,7 @@ private:
     Status _handle_union(avro_value_t input_value, avro_value_t& branch);
     Status _get_array_element(avro_value_t* cur_value, size_t idx, avro_value_t* element);
     std::string _preprocess_jsonpaths(std::string jsonpath);
-    Status _construct_row_without_jsonpath(avro_value_t avro_value, Chunk* chunk);
+    Status _construct_row_without_jsonpath(const avro_value_t& avro_value, Chunk* chunk);
 
     const TBrokerScanRange& _scan_range;
     serdes_t* _serdes;
