@@ -287,6 +287,16 @@ Status AvroScanner::_parse_avro(Chunk* chunk, std::shared_ptr<SequentialFile> fi
                     return Status::InternalError(err_msg);
                 }
                 _data_idx_to_slot.assign(element_count, SlotInfo());
+                for (size_t i = 0; i < element_count; i++) {
+                    const char* field_name;
+                    avro_value_t element_value;
+                    if (UNLIKELY(avro_value_get_by_index(&avro_value, i, &element_value, &field_name) != 0)) {
+                        auto err_msg = "Cannot get value by index: " + std::string(avro_strerror());
+                        return Status::InternalError(err_msg);
+                    }
+                    _data_idx_to_fieldname.push_back(std::string(field_name));
+                }
+
                 _init_data_idx_to_slot_once = true;
             }
             st = _construct_row_without_jsonpath(avro_value, chunk);
@@ -316,8 +326,7 @@ Status AvroScanner::_construct_row_without_jsonpath(const avro_value_t& avro_val
     }
     avro_value_t element_value;
     for (size_t i = 0; i < element_count; i++) {
-        const char* field_name;
-        if (UNLIKELY(avro_value_get_by_index(&avro_value, i, &element_value, &field_name) != 0)) {
+        if (UNLIKELY(avro_value_get_by_index(&avro_value, i, &element_value, NULL) != 0)) {
             auto err_msg = "Cannot get value by index: " + std::string(avro_strerror());
             return Status::InternalError(err_msg);
         }
@@ -328,7 +337,7 @@ Status AvroScanner::_construct_row_without_jsonpath(const avro_value_t& avro_val
         } else if (slot_info.id_ == -1) {
             continue;
         } else {
-            std::string_view key(field_name);
+            const std::string& key = _data_idx_to_fieldname[i];
             // look up key in the slot dict.
             auto itr = _slot_desc_dict.find(key);
             if (itr == _slot_desc_dict.end()) {

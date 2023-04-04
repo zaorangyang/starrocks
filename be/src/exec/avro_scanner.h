@@ -124,6 +124,7 @@ private:
     // std::vector<PreviousParsedItem> _prev_parsed_position;
     std::vector<bool> _found_columns;
     std::vector<SlotInfo> _data_idx_to_slot;
+    std::vector<std::string> _data_idx_to_fieldname;
     bool _init_data_idx_to_slot_once;
 
 #if BE_TEST
