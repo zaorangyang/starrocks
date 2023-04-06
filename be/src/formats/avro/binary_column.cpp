@@ -106,21 +106,6 @@ static Status add_column_with_numeric_value(BinaryColumn* column, const TypeDesc
 static Status add_column_with_string_value(BinaryColumn* column, const TypeDescriptor& type_desc,
                                            const std::string& name, const avro_value_t& value) {
     switch (avro_value_get_type(&value)) {
-    case AVRO_ENUM: {
-        avro_schema_t enum_schema;
-        int symbol_value;
-        const char* symbol_name;
-        if (UNLIKELY(avro_value_get_enum(&value, &symbol_value) != 0)) {
-            auto err_msg = strings::Substitute("Get enum value error. column=$0", name);
-            return Status::InvalidArgument(err_msg);
-        }
-        enum_schema = avro_value_get_schema(&value);
-        symbol_name = avro_schema_enum_get(enum_schema, symbol_value);
-
-        column->append(Slice(symbol_name));
-        return Status::OK();
-    }
-
     case AVRO_STRING: {
         const char* in;
         size_t size;
@@ -136,6 +121,21 @@ static Status add_column_with_string_value(BinaryColumn* column, const TypeDescr
         }
 
         column->append(Slice{in, size});
+        return Status::OK();
+    }
+
+    case AVRO_ENUM: {
+        avro_schema_t enum_schema;
+        int symbol_value;
+        const char* symbol_name;
+        if (UNLIKELY(avro_value_get_enum(&value, &symbol_value) != 0)) {
+            auto err_msg = strings::Substitute("Get enum value error. column=$0", name);
+            return Status::InvalidArgument(err_msg);
+        }
+        enum_schema = avro_value_get_schema(&value);
+        symbol_name = avro_schema_enum_get(enum_schema, symbol_value);
+
+        column->append(Slice(symbol_name));
         return Status::OK();
     }
 

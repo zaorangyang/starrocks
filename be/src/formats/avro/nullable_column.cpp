@@ -257,7 +257,7 @@ Status add_adaptive_nullable_column(Column* column, const TypeDescriptor& type_d
     }
 
     auto st = add_adpative_nullable_column(column, type_desc, name, value);
-    if (!st.ok() && invalid_as_null) {
+    if (UNLIKELY(!st.ok() && invalid_as_null)) {
         column->append_nulls(1);
         return Status::OK();
     }

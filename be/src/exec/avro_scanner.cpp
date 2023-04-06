@@ -319,11 +319,7 @@ Status AvroScanner::_parse_avro(Chunk* chunk, std::shared_ptr<SequentialFile> fi
 
 Status AvroScanner::_construct_row_without_jsonpath(const avro_value_t& avro_value, Chunk* chunk) {
     _found_columns.assign(chunk->num_columns(), false);
-    size_t element_count;
-    if (UNLIKELY(avro_value_get_size(&avro_value, &element_count) != 0)) {
-        auto err_msg = "Cannot get record size: " + std::string(avro_strerror());
-        return Status::InternalError(err_msg);
-    }
+    size_t element_count = _data_idx_to_fieldname.size();
     avro_value_t element_value;
     for (size_t i = 0; i < element_count; i++) {
         if (UNLIKELY(avro_value_get_by_index(&avro_value, i, &element_value, NULL) != 0)) {
@@ -336,7 +332,7 @@ Status AvroScanner::_construct_row_without_jsonpath(const avro_value_t& avro_val
             _found_columns[column_index] = true;
         } else if (slot_info.id_ == -1) {
             continue;
-        } else {
+        } else if (UNLIKELY(slot_info.id_ < -1)) {
             const std::string& key = _data_idx_to_fieldname[i];
             // look up key in the slot dict.
             auto itr = _slot_desc_dict.find(key);
@@ -358,7 +354,7 @@ Status AvroScanner::_construct_row_without_jsonpath(const avro_value_t& avro_val
     }
 
     for (int i=0; i<_found_columns.size(); i++) {
-        if (!_found_columns[i]) {
+        if (UNLIKELY(!_found_columns[i])) {
             auto& column = chunk->get_column_by_index(i);
             column->append_nulls(1);
         }
