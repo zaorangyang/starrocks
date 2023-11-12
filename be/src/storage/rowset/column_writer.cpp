@@ -209,7 +209,8 @@ private:
     faststring _encode_buf;
     NullEncodingPB _null_encoding;
 };
-
+// 一个列是如何确定自己该用哪种编码方式的
+// 参考StatusOr<std::unique_ptr<ColumnWriter>> ColumnWriter::create
 class StringColumnWriter final : public ColumnWriter {
 public:
     StringColumnWriter(const ColumnWriterOptions& opts, TypeInfoPtr type_info,

@@ -32,9 +32,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include "storage/rowset/binary_dict_page.h"
+#include "storage/rowset/dict_page.h"
 
 #include <memory>
+#include <vector>
 
 #include "common/logging.h"
 #include "gutil/casts.h"
@@ -49,22 +50,8 @@ namespace starrocks {
 
 using strings::Substitute;
 
-// 已知：
-// 1. binary字典编码一般情况下有两个编码器，data-page-builder和dict-builder
-// 2. dict-builder用于编码字典，data-page-builder用于编码字典的索引
-// 3. 一般情况下data-page-builder使用BitshufflePageBuilder编码，而dict-builder
-//    使用BinaryPlainPageBuilder编码
-// 4. 对于binary字典编码来说，按照目前的实现data-page-builder需要提前reserve一段内存，用于存储header
-//    data-page-builder在字典页没有满的时候，用的是BitshufflePageBuilder，字典页满了以后，用的是
-//    BinaryPlainPageBuilder，所以这要求BitshufflePageBuilder和BinaryPlainPageBuilder都需要有
-//    reserve header的能力
-// 5. 对于BitshufflePageBuilder reserve header操作。它的过程是保留一个空白区域在编码段的最前面，这个空白
-//    区域最后会存储数据页的entry个数。
-// 6. 而BitshufflePageBuilder的reserve header操作也是保留一个空白区域在编码段的最前面，但是这个空白区域
-//    没有填充任何数据
-// 7. 当BinaryDictPageBuilder finsh时，会将数据页变成faststring流返回，在返回之前会将所有的编码方式写入到
-//    这个流的前4个字节，所以这就是在data-page-builder前面reverve header的原因
-BinaryDictPageBuilder::BinaryDictPageBuilder(const PageBuilderOptions& options)
+template <LogicalType Type>
+DictPageBuilder<Type>::DictPageBuilder(const PageBuilderOptions& options)
         : _options(options),
           _finished(false),
           _data_page_builder(nullptr),
@@ -75,37 +62,32 @@ BinaryDictPageBuilder::BinaryDictPageBuilder(const PageBuilderOptions& options)
     _data_page_builder->reserve_head(BINARY_DICT_PAGE_HEADER_SIZE);
     PageBuilderOptions dict_builder_options;
     dict_builder_options.data_page_size = _options.dict_page_size;
-    _dict_builder = std::make_unique<BinaryPlainPageBuilder>(dict_builder_options);
+    _dict_builder = std::make_unique<PlainPageBuilder<Type>>(dict_builder_options);
     reset();
 }
 
-bool BinaryDictPageBuilder::is_page_full() {
+template <LogicalType Type>
+bool DictPageBuilder<Type>::is_page_full() {
     if (_data_page_builder->is_page_full()) {
         return true;
     }
     return _encoding_type == DICT_ENCODING && _dict_builder->is_page_full();
 }
 
-uint32_t BinaryDictPageBuilder::add(const uint8_t* vals, uint32_t count) {
+template <LogicalType Type>
+uint32_t DictPageBuilder<Type>::add(const uint8_t* vals, uint32_t count) {
     if (_encoding_type == DICT_ENCODING) {
         DCHECK(!_finished);
         DCHECK_GT(count, 0);
-        const auto* src = reinterpret_cast<const Slice*>(vals);
         uint32_t value_code = -1;
         // Manually devirtualization.
         auto* code_page = down_cast<BitshufflePageBuilder<TYPE_INT>*>(_data_page_builder.get());
-
-        if (_data_page_builder->count() == 0) {
-            auto s = unaligned_load<Slice>(src);
-            _first_value.assign_copy(reinterpret_cast<const uint8_t*>(s.get_data()), s.get_size());
-        }
-
-        for (int i = 0; i < count; ++i, ++src) {
-            auto s = unaligned_load<Slice>(src);
+        for (int i = 0; i < count; ++i) {
+            Slice s = Slice(vals + i * SIZE_OF_TYPE, SIZE_OF_TYPE);
             auto iter = _dictionary.find(s);
             if (iter != _dictionary.end()) {
                 value_code = iter->second;
-            } else if (_dict_builder->add_slice(s)) {
+            } else if (_dict_builder->add(vals + i * SIZE_OF_TYPE, 1) > 0) {
                 value_code = _dictionary.size();
                 _dictionary.insert_or_assign(std::string(s.data, s.size), value_code);
             } else {
@@ -121,8 +103,8 @@ uint32_t BinaryDictPageBuilder::add(const uint8_t* vals, uint32_t count) {
         return _data_page_builder->add(vals, count);
     }
 }
-
-faststring* BinaryDictPageBuilder::finish() {
+template <LogicalType Type>
+faststring* DictPageBuilder<Type>::finish() {
     DCHECK(!_finished);
     _finished = true;
 
@@ -131,10 +113,11 @@ faststring* BinaryDictPageBuilder::finish() {
     return data_slice;
 }
 
-void BinaryDictPageBuilder::reset() {
+template <LogicalType Type>
+void DictPageBuilder<Type>::reset() {
     _finished = false;
     if (_encoding_type == DICT_ENCODING && _dict_builder->is_page_full()) {
-        _data_page_builder = std::make_unique<BinaryPlainPageBuilder>(_options);
+        _data_page_builder = std::make_unique<PlainPageBuilder<Type>>(_options);
         _data_page_builder->reserve_head(BINARY_DICT_PAGE_HEADER_SIZE);
         _encoding_type = PLAIN_ENCODING;
     } else {
@@ -143,67 +126,42 @@ void BinaryDictPageBuilder::reset() {
     _finished = false;
 }
 
-uint32_t BinaryDictPageBuilder::count() const {
+template <LogicalType Type>
+uint32_t DictPageBuilder<Type>::count() const {
     return _data_page_builder->count();
 }
 
-uint64_t BinaryDictPageBuilder::size() const {
+template <LogicalType Type>
+uint64_t DictPageBuilder<Type>::size() const {
     return _data_page_builder->size();
 }
 
-faststring* BinaryDictPageBuilder::get_dictionary_page() {
+template <LogicalType Type>
+faststring* DictPageBuilder<Type>::get_dictionary_page() {
     return _dict_builder->finish();
 }
 
-Status BinaryDictPageBuilder::get_first_value(void* value) const {
-    DCHECK(_finished);
-    if (_data_page_builder->count() == 0) {
-        return Status::NotFound("page is empty");
-    }
-    if (_encoding_type != DICT_ENCODING) {
-        return _data_page_builder->get_first_value(value);
-    }
-    *reinterpret_cast<Slice*>(value) = Slice(_first_value);
-    return Status::OK();
-}
-
-Status BinaryDictPageBuilder::get_last_value(void* value) const {
-    DCHECK(_finished);
-    if (_data_page_builder->count() == 0) {
-        return Status::NotFound("page is empty");
-    }
-    if (_encoding_type != DICT_ENCODING) {
-        return _data_page_builder->get_last_value(value);
-    }
-    uint32_t value_code;
-    RETURN_IF_ERROR(_data_page_builder->get_last_value(&value_code));
-    *reinterpret_cast<Slice*>(value) = _dict_builder->get_value(value_code);
-    return Status::OK();
-}
-
-bool BinaryDictPageBuilder::is_valid_global_dict(const GlobalDictMap* global_dict) const {
-    for (const auto& it : _dictionary) {
-        if (auto iter = global_dict->find(it.first); iter == global_dict->end()) {
-            return false;
-        }
-    }
-    return true;
-}
-
-// 解码：
-// 1. BinaryDictPageDecoder初始时持有一段内存，从这段内存的header可以知道使用的编码方式DICT_ENCODING/PLAIN_ENCODING
-//    如果是DICT_ENCODING，那么将data-page-decoder初始化为BitShufflePageDecoder，如果是PLAIN_ENCODING，将
-//    data-page-decoder初始化为BinaryPlainPageDecoder
-// 2. 在初始化BinaryDictPageDecoder时并不会load字典页，字典页额外提供了一个函数set_dict_decoder load，这个函数会设置
-//    dict-decoder为BinaryPlainPageDecoder
-// 3. 在读数据的时候，如果说编码方式为PLAIN_ENCODING，那么直接从data-page-decoder加载数据即可，如果不是PLAIN_ENCODING，
-//    那说明data-page存储的不是实际的数据，而是数据的index，此时需要从字典里加载数据
 template <LogicalType Type>
-BinaryDictPageDecoder<Type>::BinaryDictPageDecoder(Slice data)
+Status DictPageBuilder<Type>::get_first_value(void* value) const {
+    return Status::OK();
+}
+
+template <LogicalType Type>
+Status DictPageBuilder<Type>::get_last_value(void* value) const {
+    return Status::OK();
+}
+
+template <LogicalType Type>
+bool DictPageBuilder<Type>::is_valid_global_dict(const GlobalDictMap* global_dict) const {
+    return false;
+}
+
+template <LogicalType Type>
+DictPageDecoder<Type>::DictPageDecoder(Slice data)
         : _data(data), _data_page_decoder(nullptr), _parsed(false), _encoding_type(UNKNOWN_ENCODING) {}
 
 template <LogicalType Type>
-Status BinaryDictPageDecoder<Type>::init() {
+Status DictPageDecoder<Type>::init() {
     CHECK(!_parsed);
     if (_data.size < BINARY_DICT_PAGE_HEADER_SIZE) {
         return Status::Corruption(
@@ -218,7 +176,7 @@ Status BinaryDictPageDecoder<Type>::init() {
         _data_page_decoder = std::make_unique<BitShufflePageDecoder<TYPE_INT>>(_data);
     } else if (_encoding_type == PLAIN_ENCODING) {
         DCHECK_EQ(_encoding_type, PLAIN_ENCODING);
-        _data_page_decoder.reset(new BinaryPlainPageDecoder<Type>(_data));
+        _data_page_decoder.reset(new PlainPageDecoder<Type>(_data));
     } else {
         LOG(WARNING) << "invalid encoding type:" << _encoding_type;
         return Status::Corruption(strings::Substitute("invalid encoding type:$0", _encoding_type));
@@ -230,18 +188,17 @@ Status BinaryDictPageDecoder<Type>::init() {
 }
 
 template <LogicalType Type>
-Status BinaryDictPageDecoder<Type>::seek_to_position_in_page(uint32_t pos) {
+Status DictPageDecoder<Type>::seek_to_position_in_page(uint32_t pos) {
     return _data_page_decoder->seek_to_position_in_page(pos);
 }
 
 template <LogicalType Type>
-void BinaryDictPageDecoder<Type>::set_dict_decoder(PageDecoder* dict_decoder) {
-    _dict_decoder = down_cast<BinaryPlainPageDecoder<Type>*>(dict_decoder);
-    _max_value_legth = _dict_decoder->max_value_length();
+void DictPageDecoder<Type>::set_dict_decoder(PageDecoder* dict_decoder) {
+    _dict_decoder = down_cast<PlainPageDecoder<Type>*>(dict_decoder);
 }
 
 template <LogicalType Type>
-Status BinaryDictPageDecoder<Type>::next_batch(size_t* n, Column* dst) {
+Status DictPageDecoder<Type>::next_batch(size_t* n, Column* dst) {
     SparseRange<> read_range;
     uint32_t begin = current_index();
     read_range.add(Range<>(begin, begin + *n));
@@ -251,7 +208,7 @@ Status BinaryDictPageDecoder<Type>::next_batch(size_t* n, Column* dst) {
 }
 
 template <LogicalType Type>
-Status BinaryDictPageDecoder<Type>::next_batch(const SparseRange<>& range, Column* dst) {
+Status DictPageDecoder<Type>::next_batch(const SparseRange<>& range, Column* dst) {
     if (_encoding_type == PLAIN_ENCODING) {
         return _data_page_decoder->next_batch(range, dst);
     }
@@ -268,41 +225,60 @@ Status BinaryDictPageDecoder<Type>::next_batch(const SparseRange<>& range, Colum
     size_t nread = _vec_code_buf->size();
     using cast_type = CppTypeTraits<TYPE_INT>::CppType;
     const auto* codewords = reinterpret_cast<const cast_type*>(_vec_code_buf->raw_data());
-    std::vector<Slice> slices;
-    raw::stl_vector_resize_uninitialized(&slices, nread);
-
-    if constexpr (Type == TYPE_CHAR) {
-        for (int i = 0; i < nread; ++i) {
-            Slice element = _dict_decoder->string_at_index(codewords[i]);
-            // Strip trailing '\x00'
-            element.size = strnlen(element.data, element.size);
-            slices[i] = element;
-        }
-    } else {
-        for (int i = 0; i < nread; ++i) {
-            slices[i] = _dict_decoder->string_at_index(codewords[i]);
-        }
+    std::vector<ValueType> numbers;
+    raw::stl_vector_resize_uninitialized(&numbers, nread);
+    for (int i = 0; i < nread; ++i) {
+        ValueType value;
+        _dict_decoder->at_index(codewords[i], &value);
+        numbers[i] = value;
     }
-
-    CHECK(dst->append_strings_overflow(slices, _max_value_legth));
+    dst->append_numbers(numbers.data(), numbers.size() * SIZE_OF_TYPE);
     return Status::OK();
 }
 
 template <LogicalType Type>
-Status BinaryDictPageDecoder<Type>::next_dict_codes(size_t* n, Column* dst) {
+Status DictPageDecoder<Type>::next_dict_codes(size_t* n, Column* dst) {
     DCHECK(_encoding_type == DICT_ENCODING);
     DCHECK(_parsed);
     return _data_page_decoder->next_batch(n, dst);
 }
 
 template <LogicalType Type>
-Status BinaryDictPageDecoder<Type>::next_dict_codes(const SparseRange<>& range, Column* dst) {
+Status DictPageDecoder<Type>::next_dict_codes(const SparseRange<>& range, Column* dst) {
     DCHECK(_encoding_type == DICT_ENCODING);
     DCHECK(_parsed);
     return _data_page_decoder->next_batch(range, dst);
 }
 
-template class BinaryDictPageDecoder<TYPE_CHAR>;
-template class BinaryDictPageDecoder<TYPE_VARCHAR>;
+
+template class DictPageDecoder<TYPE_TINYINT>;
+template class DictPageDecoder<TYPE_SMALLINT>;
+template class DictPageDecoder<TYPE_INT>;
+template class DictPageDecoder<TYPE_BIGINT>;
+template class DictPageDecoder<TYPE_LARGEINT>;
+template class DictPageDecoder<TYPE_FLOAT>;
+template class DictPageDecoder<TYPE_DOUBLE>;
+template class DictPageDecoder<TYPE_DATE_V1>;
+template class DictPageDecoder<TYPE_DATE>;
+template class DictPageDecoder<TYPE_DATETIME_V1>;
+template class DictPageDecoder<TYPE_DATETIME>;
+template class DictPageDecoder<TYPE_DECIMAL>;
+template class DictPageDecoder<TYPE_DECIMALV2>;
+
+
+template class DictPageBuilder<TYPE_TINYINT>;
+template class DictPageBuilder<TYPE_SMALLINT>;
+template class DictPageBuilder<TYPE_INT>;
+template class DictPageBuilder<TYPE_BIGINT>;
+template class DictPageBuilder<TYPE_LARGEINT>;
+template class DictPageBuilder<TYPE_FLOAT>;
+template class DictPageBuilder<TYPE_DOUBLE>;
+template class DictPageBuilder<TYPE_DATE_V1>;
+template class DictPageBuilder<TYPE_DATE>;
+template class DictPageBuilder<TYPE_DATETIME_V1>;
+template class DictPageBuilder<TYPE_DATETIME>;
+template class DictPageBuilder<TYPE_DECIMAL>;
+template class DictPageBuilder<TYPE_DECIMALV2>;
 
 } // namespace starrocks
+
