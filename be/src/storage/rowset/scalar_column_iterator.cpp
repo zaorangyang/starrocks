@@ -37,6 +37,7 @@
 #include "storage/column_predicate.h"
 #include "storage/rowset/binary_dict_page.h"
 #include "storage/rowset/dict_page.h"
+#include "storage/rowset/bitshuffle_page.h"
 #include "storage/rowset/column_reader.h"
 #include "storage/rowset/encoding_info.h"
 #include "util/bitmap.h"
@@ -312,7 +313,7 @@ Status ScalarColumnIterator::_load_dict_page() {
     if (Type == TYPE_CHAR || Type == TYPE_VARCHAR) {
         _dict_decoder = std::make_unique<BinaryPlainPageDecoder<Type>>(dict_data);
     } else {
-        _dict_decoder = std::make_unique<PlainPageDecoder<Type>>(dict_data);
+        _dict_decoder = std::make_unique<BitShufflePageDecoder<Type>>(dict_data);
     }
     return _dict_decoder->init();
 }

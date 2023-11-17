@@ -389,7 +389,11 @@ Status ScalarColumnWriter::write_data() {
         PageFooterPB footer;
         footer.set_type(DICTIONARY_PAGE);
         footer.set_uncompressed_size(dict_body->size());
-        footer.mutable_dict_page_footer()->set_encoding(PLAIN_ENCODING);
+        if (_encoding_info->type() == TYPE_CHAR || _encoding_info->type() == TYPE_VARCHAR) {
+            footer.mutable_dict_page_footer()->set_encoding(PLAIN_ENCODING);
+        } else {
+            footer.mutable_dict_page_footer()->set_encoding(BIT_SHUFFLE);
+        }
 
         PagePointer dict_pp;
         std::vector<Slice> body{Slice(*dict_body)};

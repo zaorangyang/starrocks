@@ -240,6 +240,7 @@ private:
 
 template <LogicalType Type>
 class BitShufflePageDecoder final : public PageDecoder {
+    typedef typename TypeTraits<Type>::CppType CppType;
 public:
     BitShufflePageDecoder(Slice data) : _data(data) {}
 
@@ -345,6 +346,14 @@ public:
         return Status::OK();
     }
 
+    void at_index(uint32_t idx, CppType* out) const {
+        memcpy(out, &_data[BITSHUFFLE_PAGE_HEADER_SIZE + idx * SIZE_OF_TYPE], SIZE_OF_TYPE);
+    }
+
+    inline const void* get_data(size_t pos) {
+        return static_cast<const void*>(&_data[pos + BITSHUFFLE_PAGE_HEADER_SIZE]);
+    }
+
     [[nodiscard]] Status next_batch(size_t* count, Column* dst) override;
 
     [[nodiscard]] Status next_batch(const SparseRange<>& range, Column* dst) override;
@@ -356,15 +365,9 @@ public:
     EncodingTypePB encoding_type() const override { return BIT_SHUFFLE; }
 
 private:
-    inline const void* get_data(size_t pos) {
-        return static_cast<const void*>(&_data[pos + BITSHUFFLE_PAGE_HEADER_SIZE]);
-    }
-
     void _copy_next_values(size_t n, void* data) {
         memcpy(data, get_data(_cur_index * SIZE_OF_TYPE), n * SIZE_OF_TYPE);
     }
-
-    typedef typename TypeTraits<Type>::CppType CppType;
 
     enum { SIZE_OF_TYPE = TypeTraits<Type>::size };
 

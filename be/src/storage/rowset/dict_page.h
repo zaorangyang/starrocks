@@ -43,6 +43,7 @@
 #include "runtime/mem_pool.h"
 #include "storage/olap_common.h"
 #include "storage/range.h"
+#include "storage/rowset/bitshuffle_page.h"
 #include "storage/rowset/plain_page.h"
 #include "storage/rowset/common.h"
 #include "storage/rowset/options.h"
@@ -116,7 +117,7 @@ private:
 
     std::unique_ptr<PageBuilder> _data_page_builder;
 
-    std::unique_ptr<PlainPageBuilder<Type>> _dict_builder;
+    std::unique_ptr<BitshufflePageBuilder<Type>> _dict_builder;
 
     EncodingTypePB _encoding_type;
     // query for dict item -> dict id
@@ -154,7 +155,7 @@ private:
     enum { SIZE_OF_TYPE = TypeTraits<Type>::size };
     Slice _data;
     std::unique_ptr<PageDecoder> _data_page_decoder;
-    const PlainPageDecoder<Type>* _dict_decoder = nullptr;
+    const BitShufflePageDecoder<Type>* _dict_decoder = nullptr;
     bool _parsed;
     EncodingTypePB _encoding_type;
     std::shared_ptr<Column> _vec_code_buf;

@@ -62,7 +62,7 @@ DictPageBuilder<Type>::DictPageBuilder(const PageBuilderOptions& options)
     _data_page_builder->reserve_head(BINARY_DICT_PAGE_HEADER_SIZE);
     PageBuilderOptions dict_builder_options;
     dict_builder_options.data_page_size = _options.dict_page_size;
-    _dict_builder = std::make_unique<PlainPageBuilder<Type>>(dict_builder_options);
+    _dict_builder = std::make_unique<BitshufflePageBuilder<Type>>(dict_builder_options);
     reset();
 }
 
@@ -99,7 +99,7 @@ uint32_t DictPageBuilder<Type>::add(const uint8_t* vals, uint32_t count) {
         }
         return count;
     } else {
-        DCHECK_EQ(_encoding_type, PLAIN_ENCODING);
+        DCHECK_EQ(_encoding_type, BIT_SHUFFLE);
         return _data_page_builder->add(vals, count);
     }
 }
@@ -117,9 +117,9 @@ template <LogicalType Type>
 void DictPageBuilder<Type>::reset() {
     _finished = false;
     if (_encoding_type == DICT_ENCODING && _dict_builder->is_page_full()) {
-        _data_page_builder = std::make_unique<PlainPageBuilder<Type>>(_options);
+        _data_page_builder = std::make_unique<BitshufflePageBuilder<Type>>(_options);
         _data_page_builder->reserve_head(BINARY_DICT_PAGE_HEADER_SIZE);
-        _encoding_type = PLAIN_ENCODING;
+        _encoding_type = BIT_SHUFFLE;
     } else {
         _data_page_builder->reset();
     }
@@ -174,9 +174,8 @@ Status DictPageDecoder<Type>::init() {
         // copy the codewords into a temporary buffer first
         // And then copy the strings corresponding to the codewords to the destination buffer
         _data_page_decoder = std::make_unique<BitShufflePageDecoder<TYPE_INT>>(_data);
-    } else if (_encoding_type == PLAIN_ENCODING) {
-        DCHECK_EQ(_encoding_type, PLAIN_ENCODING);
-        _data_page_decoder.reset(new PlainPageDecoder<Type>(_data));
+    } else if (_encoding_type == BIT_SHUFFLE) {
+        _data_page_decoder.reset(new BitShufflePageDecoder<Type>(_data));
     } else {
         LOG(WARNING) << "invalid encoding type:" << _encoding_type;
         return Status::Corruption(strings::Substitute("invalid encoding type:$0", _encoding_type));
@@ -194,7 +193,7 @@ Status DictPageDecoder<Type>::seek_to_position_in_page(uint32_t pos) {
 
 template <LogicalType Type>
 void DictPageDecoder<Type>::set_dict_decoder(PageDecoder* dict_decoder) {
-    _dict_decoder = down_cast<PlainPageDecoder<Type>*>(dict_decoder);
+    _dict_decoder = down_cast<BitShufflePageDecoder<Type>*>(dict_decoder);
 }
 
 template <LogicalType Type>
@@ -209,7 +208,7 @@ Status DictPageDecoder<Type>::next_batch(size_t* n, Column* dst) {
 
 template <LogicalType Type>
 Status DictPageDecoder<Type>::next_batch(const SparseRange<>& range, Column* dst) {
-    if (_encoding_type == PLAIN_ENCODING) {
+    if (_encoding_type == BIT_SHUFFLE) {
         return _data_page_decoder->next_batch(range, dst);
     }
 
