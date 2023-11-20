@@ -36,6 +36,7 @@
 
 #include <glog/logging.h>
 #include <sys/types.h>
+#include "common/logging.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -128,7 +129,7 @@ public:
             return 0;
         }
         size_t old_sz = _data.size();
-        _data.resize(old_sz + sizeof(SIZE_OF_TYPE));
+        _data.resize(old_sz + SIZE_OF_TYPE);
         _count += 1;
         if constexpr (SIZE_OF_TYPE == 1) {
             *reinterpret_cast<uint8_t*>(&_data[old_sz]) = *elem;

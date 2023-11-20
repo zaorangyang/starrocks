@@ -50,6 +50,31 @@ namespace starrocks {
 
 using strings::Substitute;
 
+template <LogicalType field_type>
+struct DataTypeTraits {
+    static const LogicalType type = TYPE_INT;
+};
+
+template <>
+struct DataTypeTraits<TYPE_TINYINT> {
+    static const LogicalType type = TYPE_TINYINT;
+};
+
+template <>
+struct DataTypeTraits<TYPE_UNSIGNED_TINYINT> {
+    static const LogicalType type = TYPE_UNSIGNED_TINYINT;
+};
+
+template <>
+struct DataTypeTraits<TYPE_SMALLINT> {
+    static const LogicalType type = TYPE_SMALLINT;
+};
+
+template <>
+struct DataTypeTraits<TYPE_UNSIGNED_SMALLINT> {
+    static const LogicalType type = TYPE_UNSIGNED_SMALLINT;
+};
+
 template <LogicalType Type>
 DictPageBuilder<Type>::DictPageBuilder(const PageBuilderOptions& options)
         : _options(options),
@@ -58,7 +83,7 @@ DictPageBuilder<Type>::DictPageBuilder(const PageBuilderOptions& options)
           _dict_builder(nullptr),
           _encoding_type(DICT_ENCODING) {
     // initially use DICT_ENCODING
-    _data_page_builder = std::make_unique<BitshufflePageBuilder<TYPE_INT>>(options);
+    _data_page_builder = std::make_unique<BitshufflePageBuilder<DataTypeTraits<Type>::type>>(options);
     _data_page_builder->reserve_head(BINARY_DICT_PAGE_HEADER_SIZE);
     PageBuilderOptions dict_builder_options;
     dict_builder_options.data_page_size = _options.dict_page_size;
@@ -81,7 +106,7 @@ uint32_t DictPageBuilder<Type>::add(const uint8_t* vals, uint32_t count) {
         DCHECK_GT(count, 0);
         uint32_t value_code = -1;
         // Manually devirtualization.
-        auto* code_page = down_cast<BitshufflePageBuilder<TYPE_INT>*>(_data_page_builder.get());
+        auto* code_page = down_cast<BitshufflePageBuilder<DataTypeTraits<Type>::type>*>(_data_page_builder.get());
         for (int i = 0; i < count; ++i) {
             Slice s = Slice(vals + i * SIZE_OF_TYPE, SIZE_OF_TYPE);
             auto iter = _dictionary.find(s);
@@ -173,7 +198,7 @@ Status DictPageDecoder<Type>::init() {
     if (_encoding_type == DICT_ENCODING) {
         // copy the codewords into a temporary buffer first
         // And then copy the strings corresponding to the codewords to the destination buffer
-        _data_page_decoder = std::make_unique<BitShufflePageDecoder<TYPE_INT>>(_data);
+        _data_page_decoder = std::make_unique<BitShufflePageDecoder<DataTypeTraits<Type>::type>>(_data);
     } else if (_encoding_type == BIT_SHUFFLE) {
         _data_page_decoder.reset(new BitShufflePageDecoder<Type>(_data));
     } else {
@@ -215,14 +240,14 @@ Status DictPageDecoder<Type>::next_batch(const SparseRange<>& range, Column* dst
     DCHECK(_parsed);
     DCHECK(_dict_decoder != nullptr) << "dict decoder pointer is nullptr";
     if (_vec_code_buf == nullptr) {
-        _vec_code_buf = ChunkHelper::column_from_field_type(TYPE_INT, false);
+        _vec_code_buf = ChunkHelper::column_from_field_type(DataTypeTraits<Type>::type, false);
     }
     _vec_code_buf->resize(0);
     _vec_code_buf->reserve(range.span_size());
 
     RETURN_IF_ERROR(_data_page_decoder->next_batch(range, _vec_code_buf.get()));
     size_t nread = _vec_code_buf->size();
-    using cast_type = CppTypeTraits<TYPE_INT>::CppType;
+    using cast_type = CppTypeTraits<DataTypeTraits<Type>::type>::CppType;
     const auto* codewords = reinterpret_cast<const cast_type*>(_vec_code_buf->raw_data());
     std::vector<ValueType> numbers;
     raw::stl_vector_resize_uninitialized(&numbers, nread);
