@@ -83,6 +83,11 @@ public:
         reset();
     }
 
+    void reserve_head(uint8_t head_size) override {
+        CHECK(_reserved_head_size == 0);
+        _reserved_head_size = head_size;
+    }
+
     ~RlePageBuilder() override = default;
 
     bool is_page_full() override { return _rle_encoder->len() >= _options.data_page_size; }
@@ -117,7 +122,13 @@ public:
         // or it will lead to a bug if the header is less than 8 byte and the data is small
         _rle_encoder->Flush();
         encode_fixed32_le(&_buf[0], _count);
-        return &_buf;
+        if (_reserved_head_size == 0) {
+            return &_buf;
+        } else {
+            _plus_header_buffer.resize(_reserved_head_size + _buf.size());
+            memcpy(&_plus_header_buffer[_reserved_head_size], _buf.data(), _buf.size());
+            return &_plus_header_buffer;
+        }
     }
 
     void reset() override {
@@ -160,6 +171,8 @@ private:
     faststring _buf;
     CppType _first_value;
     CppType _last_value;
+    uint8_t _reserved_head_size{0};
+    faststring _plus_header_buffer;
 };
 
 template <LogicalType Type>

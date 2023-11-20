@@ -42,6 +42,7 @@
 #include "gutil/strings/substitute.h" // for Substitute
 #include "storage/chunk_helper.h"
 #include "storage/range.h"
+#include "storage/rowset/rle_page.h"
 #include "storage/rowset/bitshuffle_page.h"
 #include "util/slice.h" // for Slice
 #include "util/unaligned_access.h"
@@ -83,7 +84,7 @@ DictPageBuilder<Type>::DictPageBuilder(const PageBuilderOptions& options)
           _dict_builder(nullptr),
           _encoding_type(DICT_ENCODING) {
     // initially use DICT_ENCODING
-    _data_page_builder = std::make_unique<BitshufflePageBuilder<DataTypeTraits<Type>::type>>(options);
+    _data_page_builder = std::make_unique<RlePageBuilder<DataTypeTraits<Type>::type>>(options);
     _data_page_builder->reserve_head(BINARY_DICT_PAGE_HEADER_SIZE);
     PageBuilderOptions dict_builder_options;
     dict_builder_options.data_page_size = _options.dict_page_size;
@@ -106,7 +107,7 @@ uint32_t DictPageBuilder<Type>::add(const uint8_t* vals, uint32_t count) {
         DCHECK_GT(count, 0);
         uint32_t value_code = -1;
         // Manually devirtualization.
-        auto* code_page = down_cast<BitshufflePageBuilder<DataTypeTraits<Type>::type>*>(_data_page_builder.get());
+        auto* code_page = down_cast<RlePageBuilder<DataTypeTraits<Type>::type>*>(_data_page_builder.get());
         for (int i = 0; i < count; ++i) {
             Slice s = Slice(vals + i * SIZE_OF_TYPE, SIZE_OF_TYPE);
             auto iter = _dictionary.find(s);
@@ -118,7 +119,7 @@ uint32_t DictPageBuilder<Type>::add(const uint8_t* vals, uint32_t count) {
             } else {
                 return i;
             }
-            if (code_page->add_one(reinterpret_cast<const uint8_t*>(&value_code)) < 1) {
+            if (code_page->add(reinterpret_cast<const uint8_t*>(&value_code), 1) < 1) {
                 return i;
             }
         }
@@ -198,7 +199,7 @@ Status DictPageDecoder<Type>::init() {
     if (_encoding_type == DICT_ENCODING) {
         // copy the codewords into a temporary buffer first
         // And then copy the strings corresponding to the codewords to the destination buffer
-        _data_page_decoder = std::make_unique<BitShufflePageDecoder<DataTypeTraits<Type>::type>>(_data);
+        _data_page_decoder = std::make_unique<RlePageDecoder<DataTypeTraits<Type>::type>>(_data);
     } else if (_encoding_type == BIT_SHUFFLE) {
         _data_page_decoder.reset(new BitShufflePageDecoder<Type>(_data));
     } else {

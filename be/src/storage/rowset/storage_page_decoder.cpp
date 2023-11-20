@@ -111,9 +111,9 @@ public:
         // 字典页没有写满时，binary dict的数据页的header是DICT_ENCODING，此时需要用bitshuffle decode
         // 字典页写满时，binary dict的数据页的header是PLAIN_ENCODING，新引入的dict数据页的header是BIT_SHUFFLE
         size_t type = decode_fixed32_le((const uint8_t*)&(page_slice->data[0]));
-        if (type == DICT_ENCODING || type == BIT_SHUFFLE) {
+        if (type == BIT_SHUFFLE) {
             return _bit_shuffle_decoder->decode_page_data(footer, footer_size, encoding, page, page_slice);
-        } else if (type == PLAIN_ENCODING) {
+        } else if (type == DICT_ENCODING || type == PLAIN_ENCODING) {
             return Status::OK();
         } else {
             LOG(WARNING) << "invalid encoding type:" << type;
