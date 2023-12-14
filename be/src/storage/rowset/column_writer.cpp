@@ -306,7 +306,7 @@ StatusOr<std::unique_ptr<ColumnWriter>> ColumnWriter::create(const ColumnWriterO
         str_opts.need_speculate_encoding = true;
         auto column_writer = std::make_unique<ScalarColumnWriter>(str_opts, type_info, wfile);
         return std::make_unique<StringColumnWriter>(str_opts, std::move(type_info), std::move(column_writer));
-    } else if (is_default_dict_encoding(column->type())) {
+    } else if (!config::use_plain_encoding && is_default_dict_encoding(column->type())) {
         DCHECK(column->type() != TYPE_VARCHAR);
         DCHECK(column->type() != TYPE_CHAR);
         ColumnWriterOptions dict_opts = opts;
@@ -476,6 +476,7 @@ inline Status ScalarColumnWriter::set_encoding(const EncodingTypePB& encoding) {
     _opts.meta->set_encoding(_encoding_info->encoding());
     PageBuilderOptions opts;
     opts.data_page_size = _opts.data_page_size;
+    opts.dict_page_size = config::dict_page_size;
     RETURN_IF_ERROR(_encoding_info->create_page_builder(opts, &page_builder));
     if (page_builder == nullptr) {
         return Status::NotSupported(strings::Substitute("Failed to create page builder for type $0 and encoding $1",

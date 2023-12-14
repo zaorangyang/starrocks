@@ -384,6 +384,9 @@ CONF_Double(dictionary_encoding_ratio_for_non_string_column, "1");
 // The minimum chunk size for dictionary encoding speculation
 CONF_Int32(dictionary_speculate_min_chunk_size, "10000");
 
+CONF_Int32(dict_page_size, "1048576");
+CONF_mBool(use_plain_encoding, "false");
+
 // Whether to use special thread pool for streaming load to avoid deadlock for
 // concurrent streaming loads. The maximum number of threads and queue size are
 // set INT32_MAX which indicate there is no limit for the thread pool. Note you

@@ -266,6 +266,7 @@ void Daemon::init(bool as_cn, const std::vector<StorePath>& paths) {
     }
 
     LOG(INFO) << get_version_string(false);
+    LOG(INFO) << "base128 yzr22";
 
     init_thrift_logging();
     CpuInfo::init();

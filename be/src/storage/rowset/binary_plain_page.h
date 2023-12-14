@@ -107,12 +107,28 @@ public:
     faststring* finish() override {
         DCHECK(!_finished);
         DCHECK_EQ(_next_offset + _reserved_head_size, _buffer.size());
+        // TODO: 改成base128编码后，如何估计准确的size?
         _buffer.reserve(_size_estimate);
+        size_t data_length = _buffer.size();
+
         // Set up trailer
-        for (uint32_t _offset : _offsets) {
-            put_fixed32_le(&_buffer, _offset);
+        if (!_offsets.empty()) {
+            std::vector<uint32_t> elements_len;
+            DCHECK_EQ(0, _offsets[0]);
+            uint32_t pre_offset = _offsets[0];
+            for (int i = 1; i < _offsets.size(); i++) {
+                elements_len.push_back(_offsets[i] - pre_offset);
+                pre_offset = _offsets[i];
+            }
+            elements_len.push_back(data_length - pre_offset);
+            DCHECK_EQ(_offsets.size(), elements_len.size());
+            for (uint32_t len: elements_len) {
+                put_fixed32_le_base128(&_buffer, len);
+            }
         }
-        put_fixed32_le(&_buffer, _offsets.size());
+
+        size_t offset_length = _buffer.size() - data_length;
+        put_fixed32_le(&_buffer, offset_length);
         if (!_offsets.empty()) {
             _copy_value_at(0, &_first_value);
             _copy_value_at(_offsets.size() - 1, &_last_value);
@@ -196,10 +212,27 @@ public:
         }
 
         // Decode trailer
-        _num_elems = decode_fixed32_le((const uint8_t*)&_data[_data.get_size() - sizeof(uint32_t)]);
-        _offsets_pos =
-                static_cast<uint32_t>(_data.get_size()) - (_num_elems + 1) * static_cast<uint32_t>(sizeof(uint32_t));
-        _offsets_ptr = reinterpret_cast<uint32_t*>(_data.data + _offsets_pos);
+        //_num_elems = decode_fixed32_le((const uint8_t*)&_data[_data.get_size() - sizeof(uint32_t)]);
+        //_offsets_pos =
+        //        static_cast<uint32_t>(_data.get_size()) - (_num_elems + 1) * static_cast<uint32_t>(sizeof(uint32_t));
+        //_offsets_ptr = reinterpret_cast<uint32_t*>(_data.data + _offsets_pos);
+        uint32_t offset_length = decode_fixed32_le((const uint8_t*)&_data[_data.get_size() - sizeof(uint32_t)]);
+        _offsets_pos = static_cast<uint32_t>(_data.get_size()) - sizeof(uint32_t) - offset_length;
+        std::vector<uint32_t> elements_len;
+        decode_fixed_32_le_base128((const uint8_t*)&_data[_offsets_pos],
+                                   (const uint8_t*)&_data[_data.get_size() - sizeof(uint32_t)], &elements_len);
+        if (!elements_len.empty()) {
+            uint32_t pre_offset = 0;
+            _offsets.push_back(pre_offset);
+            for (int i = 0; i < elements_len.size() - 1; i++) {
+                auto len = elements_len[i];
+                _offsets.push_back(pre_offset + len);
+                pre_offset += len;
+            }
+        }
+        DCHECK_EQ(elements_len.size(), _offsets.size());
+        _num_elems = _offsets.size();
+        _offsets_ptr = _offsets.data();
 
         _parsed = true;
 
@@ -270,6 +303,7 @@ private:
 #if __BYTE_ORDER == __LITTLE_ENDIAN
         return _offsets_ptr[idx];
 #else
+        // TODO:
         const uint32_t pos = _offsets_pos + idx * static_cast<uint32_t>(sizeof(uint32_t));
         const auto* const p = reinterpret_cast<const uint8_t*>(&_data[pos]);
         return decode_fixed32_le(p);
@@ -285,6 +319,7 @@ private:
 
     // Index of the currently seeked element in the page.
     uint32_t _cur_idx;
+    std::vector<uint32_t> _offsets;
 };
 
 } // namespace starrocks

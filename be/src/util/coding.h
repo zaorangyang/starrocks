@@ -85,6 +85,23 @@ inline uint32_t decode_fixed32_le(const uint8_t* buf) {
 #endif
 }
 
+inline void decode_fixed_32_le_base128(const uint8_t* buf_start, const uint8_t* buf_end, std::vector<uint32_t>* out) {
+    const uint8_t* cur = buf_start;
+    while (cur <  buf_end) {
+        uint32_t res = 0;
+        for (size_t i = 0; i < 10; ++i)
+        {
+            uint8_t byte = *cur++;
+            res |= (byte & 0x7F) << (7 * i);
+
+            if (!(byte & 0x80)) {
+                out->push_back(res);
+                break;
+            }
+        }
+    }
+}
+
 inline uint32_t decode_fixed32_be(const uint8_t* buf) {
     uint32_t res;
     memcpy(&res, buf, sizeof(res));
@@ -120,6 +137,17 @@ inline void put_fixed32_le(T* dst, uint32_t val) {
     uint8_t buf[sizeof(val)];
     encode_fixed32_le(buf, val);
     dst->append((char*)buf, sizeof(buf));
+}
+
+template <typename T>
+inline void put_fixed32_le_base128(T* dst, uint32_t val) {
+    while (val > 0x7F) {
+        uint8_t byte = 0x80 | (val & 0x7F);
+        dst->push_back(byte);
+        val >>= 7;
+    }
+    uint8_t final_byte = static_cast<uint8_t>(val);
+    dst->push_back(final_byte);
 }
 
 template <typename T>

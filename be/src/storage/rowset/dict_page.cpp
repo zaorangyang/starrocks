@@ -119,6 +119,7 @@ faststring* DictPageBuilder<Type>::finish() {
     _finished = true;
 
     faststring* data_slice = _data_page_builder->finish();
+    // LOG(INFO) << "yzr mark encoding type: " << _encoding_type;
     encode_fixed32_le(data_slice->data(), _encoding_type);
     return data_slice;
 }

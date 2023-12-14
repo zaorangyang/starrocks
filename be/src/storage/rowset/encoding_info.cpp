@@ -180,7 +180,9 @@ public:
     ~EncodingInfoResolver();
 
     EncodingTypePB get_default_encoding(LogicalType type, bool optimize_value_seek) const {
-        auto& encoding_map = optimize_value_seek ? _value_seek_encoding_map : _default_encoding_type_map;
+
+        auto& encoding_map = optimize_value_seek ? _value_seek_encoding_map :
+                    (config::use_plain_encoding ? _default_encoding_type_map_plain : _default_encoding_type_map);
         auto it = encoding_map.find(delegate_type(type));
         if (it != encoding_map.end()) {
             return it->second;
@@ -208,6 +210,14 @@ private:
         _encoding_map.emplace(key, new EncodingInfo(EncodingTraits<type, encoding_type>()));
     }
 
+    template <LogicalType type, EncodingTypePB encoding_type>
+    void _add_map2() {
+        if (_default_encoding_type_map_plain.find(type) == _default_encoding_type_map_plain.end()) {
+            _default_encoding_type_map_plain[type] = encoding_type;
+        }
+    }
+
+    std::unordered_map<LogicalType, EncodingTypePB, std::hash<int>> _default_encoding_type_map_plain;
     std::unordered_map<LogicalType, EncodingTypePB, std::hash<int>> _default_encoding_type_map;
 
     // default encoding for each type which optimizes value seek
@@ -223,67 +233,82 @@ EncodingInfoResolver::EncodingInfoResolver() {
     _add_map<TYPE_TINYINT, BIT_SHUFFLE>();
     _add_map<TYPE_TINYINT, FOR_ENCODING, true>();
     _add_map<TYPE_TINYINT, PLAIN_ENCODING>();
+    _add_map2<TYPE_TINYINT, PLAIN_ENCODING>();
 
     _add_map<TYPE_SMALLINT, DICT_ENCODING>();
     _add_map<TYPE_SMALLINT, BIT_SHUFFLE>();
     _add_map<TYPE_SMALLINT, FOR_ENCODING, true>();
     _add_map<TYPE_SMALLINT, PLAIN_ENCODING>();
+    _add_map2<TYPE_SMALLINT, PLAIN_ENCODING>();
 
     _add_map<TYPE_INT, DICT_ENCODING>();
     _add_map<TYPE_INT, BIT_SHUFFLE>();
     _add_map<TYPE_INT, FOR_ENCODING, true>();
     _add_map<TYPE_INT, PLAIN_ENCODING>();
+    _add_map2<TYPE_INT, PLAIN_ENCODING>();
 
     _add_map<TYPE_BIGINT, DICT_ENCODING>();
     _add_map<TYPE_BIGINT, BIT_SHUFFLE>();
     _add_map<TYPE_BIGINT, FOR_ENCODING, true>();
     _add_map<TYPE_BIGINT, PLAIN_ENCODING>();
+    _add_map2<TYPE_BIGINT, PLAIN_ENCODING>();
 
     _add_map<TYPE_LARGEINT, DICT_ENCODING>();
     _add_map<TYPE_LARGEINT, BIT_SHUFFLE>();
     _add_map<TYPE_LARGEINT, PLAIN_ENCODING>();
     _add_map<TYPE_LARGEINT, FOR_ENCODING, true>();
+    _add_map2<TYPE_LARGEINT, PLAIN_ENCODING>();
 
     _add_map<TYPE_FLOAT, DICT_ENCODING>();
     _add_map<TYPE_FLOAT, BIT_SHUFFLE>();
     _add_map<TYPE_FLOAT, PLAIN_ENCODING>();
+    _add_map2<TYPE_FLOAT, PLAIN_ENCODING>();
 
     _add_map<TYPE_DOUBLE, DICT_ENCODING>();
     _add_map<TYPE_DOUBLE, BIT_SHUFFLE>();
     _add_map<TYPE_DOUBLE, PLAIN_ENCODING>();
+    _add_map2<TYPE_DOUBLE, PLAIN_ENCODING>();
 
     _add_map<TYPE_CHAR, DICT_ENCODING>();
     _add_map<TYPE_CHAR, PLAIN_ENCODING>();
     _add_map<TYPE_CHAR, PREFIX_ENCODING, true>();
+    _add_map2<TYPE_CHAR, DICT_ENCODING>();
 
     _add_map<TYPE_VARCHAR, DICT_ENCODING>();
     _add_map<TYPE_VARCHAR, PLAIN_ENCODING>();
     _add_map<TYPE_VARCHAR, PREFIX_ENCODING, true>();
+    _add_map2<TYPE_VARCHAR, DICT_ENCODING>();
 
     _add_map<TYPE_BOOLEAN, RLE>();
     _add_map<TYPE_BOOLEAN, BIT_SHUFFLE>();
     _add_map<TYPE_BOOLEAN, PLAIN_ENCODING, true>();
+    _add_map2<TYPE_BOOLEAN, RLE>();
 
     _add_map<TYPE_DATE_V1, BIT_SHUFFLE>();
     _add_map<TYPE_DATE_V1, PLAIN_ENCODING>();
     _add_map<TYPE_DATE_V1, FOR_ENCODING, true>();
+    _add_map2<TYPE_DATE_V1, BIT_SHUFFLE>();
 
     _add_map<TYPE_DATE, DICT_ENCODING>();
     _add_map<TYPE_DATE, BIT_SHUFFLE>();
     _add_map<TYPE_DATE, PLAIN_ENCODING>();
     _add_map<TYPE_DATE, FOR_ENCODING, true>();
+    _add_map2<TYPE_DATE, PLAIN_ENCODING>();
 
     _add_map<TYPE_DATETIME_V1, BIT_SHUFFLE>();
     _add_map<TYPE_DATETIME_V1, PLAIN_ENCODING>();
     _add_map<TYPE_DATETIME_V1, FOR_ENCODING, true>();
+    _add_map2<TYPE_DATETIME_V1, BIT_SHUFFLE>();
 
     _add_map<TYPE_DATETIME, DICT_ENCODING>();
     _add_map<TYPE_DATETIME, BIT_SHUFFLE>();
     _add_map<TYPE_DATETIME, PLAIN_ENCODING>();
     _add_map<TYPE_DATETIME, FOR_ENCODING, true>();
+    _add_map2<TYPE_DATETIME, PLAIN_ENCODING>();
 
     _add_map<TYPE_DECIMAL, BIT_SHUFFLE, true>();
     _add_map<TYPE_DECIMAL, PLAIN_ENCODING>();
+    _add_map2<TYPE_DECIMAL, BIT_SHUFFLE>();
 
     // For TYPE_DECIMALV2, BIT_SHUFFLE is used to optimize value seek.
     // Therefore, we have only adjusted the default encoding to DICT_ENCODING,
@@ -291,15 +316,20 @@ EncodingInfoResolver::EncodingInfoResolver() {
     _add_map<TYPE_DECIMALV2, DICT_ENCODING>();
     _add_map<TYPE_DECIMALV2, BIT_SHUFFLE, true>();
     _add_map<TYPE_DECIMALV2, PLAIN_ENCODING>();
+    _add_map2<TYPE_DECIMALV2, PLAIN_ENCODING>();
 
     _add_map<TYPE_HLL, PLAIN_ENCODING>();
+    _add_map2<TYPE_HLL, PLAIN_ENCODING>();
 
     _add_map<TYPE_OBJECT, PLAIN_ENCODING>();
+    _add_map2<TYPE_OBJECT, PLAIN_ENCODING>();
 
     _add_map<TYPE_PERCENTILE, PLAIN_ENCODING>();
     _add_map<TYPE_JSON, PLAIN_ENCODING>();
+    _add_map2<TYPE_PERCENTILE, PLAIN_ENCODING>();
 
     _add_map<TYPE_VARBINARY, PLAIN_ENCODING>();
+    _add_map2<TYPE_VARBINARY, PLAIN_ENCODING>();
 }
 
 EncodingInfoResolver::~EncodingInfoResolver() {
